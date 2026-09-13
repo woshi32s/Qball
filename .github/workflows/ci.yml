@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Compile check
+        run: python -m py_compile server.py scripts/update_version.py
+      - name: Server smoke test
+        run: |
+          python server.py --no-browser &
+          for i in $(seq 1 30); do
+            if curl -fs http://127.0.0.1:8600/api/health -o /tmp/health.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/health.json
+          python -c "import json;d=json.load(open('/tmp/health.json'));assert d['app']=='qball' and d['version'].startswith('0.'), d"
+          curl -fs http://127.0.0.1:8600/ -o /tmp/index.html
+          grep -q "Qball" /tmp/index.html
+          curl -fs http://127.0.0.1:8600/js/engine.js -o /dev/null
+          curl -fs http://127.0.0.1:8600/manifest.webmanifest -o /dev/null
+          kill %1 || true

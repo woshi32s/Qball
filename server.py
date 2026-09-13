@@ -20,12 +20,16 @@ import mimetypes
 import os
 import queue
 import re
+import shutil
+import socket
+import subprocess
 import sys
 import threading
 import time
 import webbrowser
 from collections import deque
 from datetime import date
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
@@ -39,10 +43,26 @@ except ImportError:
 
 from flask import Flask, Response, jsonify, request, send_file
 
+VERSION = "0.2.0"
+APP_ID = "qball"
+
 if getattr(sys, "frozen", False):
-    ROOT = Path(sys.executable).resolve().parent
+    ASSETS = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    APP_HOME = Path(sys.executable).resolve().parent
 else:
-    ROOT = Path(__file__).resolve().parent
+    ASSETS = Path(__file__).resolve().parent
+    APP_HOME = Path(__file__).resolve().parent
+
+STATE = Path(os.environ.get("QBALL_HOME") or (Path.home() / ".qball"))
+LOG_DIR = STATE / "logs"
+START_TIME = time.time()
+
+
+def config_path():
+    """打包后的本机应用使用 ~/.qball/config.json;源码/容器运行沿用项目内 config.json。"""
+    if getattr(sys, "frozen", False):
+        return STATE / "config.json"
+    return APP_HOME / "config.json"
 
 MAX_TTS_CHARS = 1500
 FIRST_CHUNK_TIMEOUT = 30
@@ -89,8 +109,47 @@ SYSTEM_PROMPT = (
     'Respond with STRICT compact JSON only: {"emotionId":"<id>","reply":"<text>"}'
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+def setup_logging():
+    handlers = []
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handlers.append(RotatingFileHandler(
+            LOG_DIR / "qball.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"))
+    except OSError:
+        pass
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers or [logging.NullHandler()],
+    )
+
+
+setup_logging()
 log = logging.getLogger("qball")
+
+
+def ensure_state():
+    """准备状态目录;打包运行时把旧版放在 exe 旁的 config.json 迁移进来。"""
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / "version.txt").write_text(VERSION, encoding="utf-8")
+    except OSError as exc:
+        log.warning("state dir unavailable: %s", exc)
+        return
+    if getattr(sys, "frozen", False):
+        target = STATE / "config.json"
+        legacy = APP_HOME / "config.json"
+        if not target.exists() and legacy.exists():
+            try:
+                shutil.copyfile(legacy, target)
+                log.info("migrated legacy config -> %s", target)
+            except OSError as exc:
+                log.warning("config migration failed: %s", exc)
+
+
+ensure_state()
 
 
 def _env_flag(name, default=True):
@@ -114,7 +173,7 @@ _voices_cache = None
 
 def load_config():
     cfg = dict(DEFAULTS)
-    path = ROOT / "config.json"
+    path = config_path()
     if path.exists():
         try:
             cfg.update(json.loads(path.read_text(encoding="utf-8")))
@@ -136,9 +195,10 @@ CONFIG = load_config()
 
 
 def save_config():
-    path = ROOT / "config.json"
+    path = config_path()
     data = {key: CONFIG.get(key, DEFAULTS[key]) for key in DEFAULTS}
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except OSError as exc:
@@ -529,6 +589,9 @@ def server_error(exc):
 @app.get("/api/health")
 def api_health():
     return jsonify({
+        "app": APP_ID,
+        "version": VERSION,
+        "uptime": int(time.time() - START_TIME),
         "ok": True,
         "model": CONFIG["model"],
         "voice": CONFIG["voice"],
@@ -546,6 +609,110 @@ def api_auth():
     if denied:
         return denied
     return jsonify({"ok": True, "admin": is_admin()})
+
+
+@app.post("/api/shutdown")
+def api_shutdown():
+    if not is_admin():
+        return api_error(403, "仅本机可退出")
+    threading.Timer(0.5, lambda: os._exit(0)).start()
+    return jsonify({"ok": True})
+
+
+TASK_NAME = "Qball"
+STARTUP_LNK = "Qball.lnk"
+
+
+def _autostart_supported():
+    return sys.platform == "win32" and getattr(sys, "frozen", False)
+
+
+def _shortcut_path():
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, 7, None, 0, buf)  # CSIDL_STARTUP
+    return Path(buf.value) / STARTUP_LNK
+
+
+def _task_exists():
+    try:
+        res = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME],
+                             capture_output=True, timeout=15)
+        return res.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _autostart_enabled():
+    if _task_exists():
+        return True
+    try:
+        return _shortcut_path().exists()
+    except OSError:
+        return False
+
+
+def set_autostart(enabled):
+    """开机自启:优先计划任务,失败回退到启动文件夹快捷方式。"""
+    exe = str(Path(sys.executable).resolve())
+    if enabled:
+        try:
+            res = subprocess.run(
+                ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/SC", "ONLOGON",
+                 "/TR", '"%s" --no-browser' % exe],
+                capture_output=True, timeout=30)
+            if res.returncode == 0:
+                return "task"
+        except (OSError, subprocess.SubprocessError):
+            pass
+        script = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            "$sc = $ws.CreateShortcut('%s'); "
+            "$sc.TargetPath = '%s'; $sc.Arguments = '--no-browser'; "
+            "$sc.WorkingDirectory = '%s'; $sc.Save()"
+        ) % (str(_shortcut_path()), exe, str(Path(exe).parent))
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, timeout=30)
+        if res.returncode != 0:
+            raise RuntimeError("无法创建开机自启(计划任务与启动文件夹均失败)")
+        return "startup"
+    else:
+        try:
+            subprocess.run(["schtasks", "/Delete", "/F", "/TN", TASK_NAME],
+                           capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        shortcut = _shortcut_path()
+        if shortcut.exists():
+            try:
+                shortcut.unlink()
+            except OSError:
+                pass
+        return "off"
+
+
+@app.get("/api/autostart")
+def api_autostart_get():
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    supported = _autostart_supported()
+    return jsonify({"supported": supported, "enabled": _autostart_enabled() if supported else False})
+
+
+@app.post("/api/autostart")
+def api_autostart_set():
+    if not is_admin():
+        return api_error(403, "仅本机可修改")
+    if not _autostart_supported():
+        return api_error(400, "开机自启仅支持打包后的 Windows 版本")
+    payload = request.get_json(silent=True) or {}
+    enabled = bool(payload.get("enabled"))
+    try:
+        set_autostart(enabled)
+    except RuntimeError as exc:
+        return api_error(500, str(exc))
+    return jsonify({"supported": True, "enabled": _autostart_enabled() if enabled else False})
 
 
 @app.get("/api/config")
@@ -815,8 +982,8 @@ def serve_static(path):
         return api_error(404, "not found")
     if Path(safe).suffix.lower() not in ALLOWED_EXT:
         return api_error(404, "not found")
-    target = (ROOT / safe).resolve()
-    if ROOT not in target.parents or not target.is_file():
+    target = (ASSETS / safe).resolve()
+    if ASSETS not in target.parents or not target.is_file():
         return api_error(404, "not found")
     resp = send_file(target, conditional=True)
     ext = target.suffix.lower()
@@ -831,21 +998,86 @@ def serve_static(path):
     return resp
 
 
+def read_saved_port():
+    try:
+        value = int((STATE / "port.txt").read_text(encoding="utf-8").strip())
+        return value if 1 <= value <= 65535 else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_port(port):
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / "port.txt").write_text(str(port), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def running_port():
+    """检测本机是否已有 Qball 实例在跑,返回其端口。"""
+    ports = []
+    saved = read_saved_port()
+    if saved:
+        ports.append(saved)
+    ports.extend(p for p in range(8600, 8611) if p not in ports)
+    for port in ports:
+        try:
+            with urlopen("http://127.0.0.1:%d/api/health" % port, timeout=1) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict) and data.get("app") == APP_ID:
+                return port
+        except Exception:
+            continue
+    return None
+
+
+def pick_port():
+    """优先复用上次端口,被占用则向后顺延(8600-8610)。"""
+    saved = read_saved_port()
+    order = ([saved] if saved else []) + [p for p in range(8600, 8611) if p != saved]
+    for port in order:
+        sock = socket.socket()
+        try:
+            sock.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+        finally:
+            sock.close()
+    return 8600
+
+
 def main():
     host = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
-    port = int(os.environ.get("PORT", "8600"))
-    if not (ROOT / "qball.html").exists():
-        print("qball.html is missing next to server.py")
+    explicit_port = os.environ.get("PORT")
+    if not (ASSETS / "qball.html").exists():
+        print("qball.html is missing next to the executable")
         sys.exit(1)
+
+    if explicit_port:
+        port = int(explicit_port)
+    else:
+        already = running_port()
+        if already:
+            url = "http://127.0.0.1:%d/" % already
+            log.info("Qball is already running -> %s", url)
+            if "--no-browser" not in sys.argv:
+                threading.Timer(0.3, lambda: webbrowser.open(url)).start()
+            return
+        port = pick_port()
+        save_port(port)
+
     if not ACCESS_CODE:
-        log.warning("ACCESS_CODE 未设置:任何人都可以直接调用接口(仅适合本地使用)")
+        log.warning("ACCESS_CODE 未设置:任何人都可以直接调用接口(仅适合本机使用)")
     if not CONFIG["api_key"]:
-        log.warning("未配置 API key:在 config.json 或环境变量 B_AI_KEY 中设置")
+        log.warning("未配置 API key:在 %s 或环境变量 B_AI_KEY 中设置", config_path())
 
     from waitress import serve as waitress_serve
 
     url = "http://%s:%d/" % ("127.0.0.1" if host in ("0.0.0.0", "::") else host, port)
-    log.info("Qball -> %s", url)
+    log.info("Qball v%s -> %s", VERSION, url)
+    log.info("state dir: %s", STATE)
     log.info("model: %s | voice: %s | key: %s | access code: %s",
              CONFIG["model"], CONFIG["voice"],
              "loaded" if CONFIG["api_key"] else "MISSING",
