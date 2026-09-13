@@ -19,6 +19,7 @@
   'use strict';
 
   var EB = (window.EmotionBall = window.EmotionBall || {});
+window.Qball = window.EmotionBall;
   var RD = window.EB_RINGS;
   var EXPR = RD.EXPRESSIONS;
   var TAU = Math.PI * 2;

@@ -1,7 +1,11 @@
 @echo off
 cd /d %~dp0
-if exist EmotionBall.exe (
-  start "" EmotionBall.exe
+if exist Qball.exe (
+  start "" Qball.exe
 ) else (
-  python server.py
+  if exist EmotionBall.exe (
+    start "" EmotionBall.exe
+  ) else (
+    python server.py
+  )
 )

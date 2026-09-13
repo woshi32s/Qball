@@ -1,12 +1,6 @@
 /*
- * AgoraMotion — Agora 动效语言 Web 移植版
- * 参数与状态机语义复刻自 newo-ether/Agora (MIT License):
- *   ui/motion/AgoraMotionPolicy.kt          动效降级策略(三类语义开关)
- *   ui/chat/message/GenerationLifecycleMotion.kt  消息生命周期时长
- *   ui/chat/StreamingTailIndicator.kt       流式尾巴指示器 + 自动跟随状态机
- *   ui/chat/ChatAppInteractionEffects.kt    拖拽阈值 / 滚动恢复延迟
- *   ui/components/AnimatedBlobBackground.kt 背景光斑
- *   ui/settings/AnimatedActionFab.kt        按压弹簧
+ * QballMotion — 动效规范模块
+ * 时长 / 曲线 / 降级策略 / 弹簧 / 状态机集中定义,供页面按场景调用。
  */
 (function (global) {
   'use strict';
@@ -56,11 +50,11 @@
     return !!(global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches);
   }
 
-  /* ---------------- motion policy (AgoraMotionPolicy.kt) ---------------- */
+  /* ---------------- motion policy ---------------- */
 
   function createPolicy() {
     var appReduce = false;
-    try { appReduce = global.localStorage.getItem('agoraDemo.reduceMotion') === '1'; } catch (e) {}
+    try { appReduce = global.localStorage.getItem('qball.reduceMotion') === '1'; } catch (e) {}
     var listeners = [];
     var mq = global.matchMedia ? global.matchMedia('(prefers-reduced-motion: reduce)') : null;
 
@@ -72,7 +66,7 @@
       get appReduceMotion() { return appReduce; },
       setAppReduceMotion: function (on) {
         appReduce = !!on;
-        try { global.localStorage.setItem('agoraDemo.reduceMotion', on ? '1' : '0'); } catch (e) {}
+        try { global.localStorage.setItem('qball.reduceMotion', on ? '1' : '0'); } catch (e) {}
         notify();
       },
       onChange: function (fn) { listeners.push(fn); },
@@ -89,7 +83,7 @@
     return policy;
   }
 
-  /* ---------------- draw-layer lifecycle enter (GenerationLifecycleMotion.kt) ---------------- */
+  /* ---------------- draw-layer lifecycle enter ---------------- */
   /* opacity + scale only — 元素第一帧就占用最终布局,永不触发重排 */
 
   function enter(el, kind, policy) {
@@ -187,7 +181,7 @@
     });
   }
 
-  /* ---------------- spring (AnimatedActionFab.kt) ---------------- */
+  /* ---------------- spring ---------------- */
 
   function createSpring(stiffness, dampingRatio) {
     var c = 2 * dampingRatio * Math.sqrt(stiffness);
@@ -279,7 +273,7 @@
     };
   }
 
-  /* ---------------- streaming tail dot (StreamingTailIndicator.kt) ---------------- */
+  /* ---------------- streaming tail dot ---------------- */
 
   function tailDotEnter(el, policy) {
     if (!el || !el.animate) return;
@@ -312,7 +306,7 @@
     }, SPEC.TAIL.EXIT_SCALE_MS + 80);
   }
 
-  /* ---------------- coalesced scroll step (StreamingTailIndicator.kt) ---------------- */
+  /* ---------------- coalesced scroll step ---------------- */
 
   function coalescedStep(errorPx, elapsedSeconds) {
     var L = SPEC.LOOK;
@@ -322,7 +316,7 @@
     return clamp(errorPx * fraction, -maxStep, maxStep);
   }
 
-  /* ---------------- streaming tail follower (StreamingTailIndicator.kt) ----------------
+  /* ---------------- streaming tail follower ----------------
    * INACTIVE / ARMED / ATTACHED / SETTLING / DETACHED
    * ARMED: 生成中但未跟随。ATTACHED: 页面底部随内容增长保持不动。
    * 用户一拖 → 立即 DETACHED;所有运动静止后,离底部足够近是唯一的重新吸附依据。
@@ -500,7 +494,7 @@
     };
   }
 
-  /* ---------------- blob background (AnimatedBlobBackground.kt) ---------------- */
+  /* ---------------- blob background ---------------- */
 
   function createBlobs(canvas, opts) {
     opts = opts || {};
@@ -697,7 +691,7 @@
     };
   }
 
-  global.AgoraMotion = {
+  global.QballMotion = {
     SPEC: SPEC,
     EASE: EASE,
     createPolicy: createPolicy,

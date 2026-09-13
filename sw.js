@@ -1,7 +1,7 @@
-/* 情绪小球 PWA 外壳:HTML 走网络优先生效最新版;静态资源 stale-while-revalidate;/api 一律直连 */
+/* Qball PWA 外壳:HTML 走网络优先生效最新版;静态资源 stale-while-revalidate;/api 一律直连 */
 const CACHE = 'eb-shell-v3';
 const SHELL = [
-  '/agora-demo.html',
+  '/qball.html',
   '/js/rings.js',
   '/js/emotions.js',
   '/js/ball.js',

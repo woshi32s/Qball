@@ -11,7 +11,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 COPY server.py sw.js manifest.webmanifest ./
-COPY agora-demo.html showcase.html ./
+COPY qball.html ./
 COPY js ./js
 COPY fonts ./fonts
 COPY icons ./icons

@@ -1,8 +1,8 @@
 {
-  "name": "情绪小球",
-  "short_name": "小球",
+  "name": "Qball",
+  "short_name": "Qball",
   "description": "会做表情的 AI 小助手,支持语音对话与动效演示",
-  "start_url": "/agora-demo.html",
+  "start_url": "/qball.html",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",

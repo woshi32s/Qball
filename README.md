@@ -1,6 +1,6 @@
 <div align="center">
 
-# 情绪小球 · Ballie
+# Qball
 
 **一个会做表情的 AI 小助手 —— 开场演出式引导 · 访客自带 Key · 点开即用**
 
@@ -14,11 +14,10 @@
 
 ![开场引导](docs/screenshots/welcome.png)
 ![品牌模型轨道](docs/screenshots/orbit.png)
-![对话](docs/screenshots/chat.png)
 
 ## 这是什么
 
-小球是一个长在网页里的 AI 小助手,有一颗会做表情的球和一套**开场演出式**的使用体验:
+Qball 是一个长在网页里的 AI 小助手,有一颗会做表情的球和一套**开场演出式**的使用体验:
 
 - **开场演出**:镜头弹簧运镜 → 大字逐字浮现 → 点一下球 → 能力图标依次爆破 → 输入卡片弹出(自动聚焦+手形引导)→ 12 个品牌模型气泡绕场 → 选中特写「嗖」地飞进小球大脑 → 小球亲自测试连接 → 进入聊天
 - **对话体验**:流式输出、思考分段卡片、增量 Markdown 渲染、自动跟随滚动(你往上拖,它绝不抢)
@@ -33,7 +32,7 @@ pip install -r requirements.txt
 python server.py        # 自动打开 http://127.0.0.1:8600
 ```
 
-Windows 下也可以直接双击 `start.bat`(若存在打包好的 `EmotionBall.exe` 会优先使用)。
+Windows 下也可以直接双击 `start.bat`(优先使用 `Qball.exe`,其次 `EmotionBall.exe`,都没有则用 Python 运行)。
 
 > 本机打开时自动识别为管理员,无需访问码;首次进入跟随引导填写自己的接口即可。
 
@@ -55,14 +54,14 @@ docker compose up -d --build
 
 ## 常见问题
 
-- **语音不响?** 公网必须 HTTPS 才能使用麦克风;检查浏览器是否自动播放被拦。
+- **语音不响?** 公网必须 HTTPS 才能使用麦克风;检查浏览器是否拦截自动播放。
 - **拉取模型失败?** 部分接口不支持 `/models`,可直接手动输入模型名。
-- **想换回开场引导?** 设置面板底部有「重播开场引导」。
+- **想重看开场引导?** 设置面板底部有「重播开场引导」。
 
-## 版权与致谢
+## 声明
 
-- 球形表情引擎来自开源项目 **Emotion Ball**(作者 **sam70361**),采用「学习交流许可(禁止商业用途)」:
-  - 非商业使用请保留 [LICENSE](LICENSE) 与署名;
-  - **商业使用需先取得书面授权**:1251579308@qq.com(条款见 [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md))。
+- **小球形象与表情引擎来源于开源项目 Emotion Ball**(作者 **sam70361**),遵循其「学习交流许可(禁止商业用途)」:
+  - 非商业使用:请保留 [LICENSE](LICENSE) 与署名;
+  - 商业使用:需事先取得书面授权 —— **1251579308@qq.com**(条款见 [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md));
+  - 原项目在线预览:https://emotion-balls.vercel.app/
 - 模型品牌图标:[lobe-icons](https://github.com/lobehub/lobe-icons)(MIT);商标归各自所有者,仅用于识别。
-- 动效语言参考:[newo-ether/Agora](https://github.com/newo-ether/Agora)(MIT)。

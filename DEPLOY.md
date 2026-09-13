@@ -1,6 +1,6 @@
 # 部署指南(公网 · Docker)
 
-> 上线前请先确认你已获得 Emotion Ball 核心引擎的**商业授权**(如需商用):
+> 上线前请先确认你已获得小球引擎(Emotion Ball,见 README 声明)的**商业授权**(如需商用):
 > 联系版权方 sam70361 · 1251579308@qq.com,详见 `LICENSE-COMMERCIAL.md`。
 
 ## 一、准备
@@ -26,7 +26,7 @@
 
 ```bash
 # 1. 把项目上传到服务器(或 git clone),进入项目目录
-cd emotion-ball
+cd Qball
 
 # 2. 准备环境变量
 cp .env.example .env

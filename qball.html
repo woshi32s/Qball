@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
-<title>情绪小球 · Agora 动效演示</title>
+<title>Qball</title>
 <meta name="theme-color" content="#060607">
-<meta property="og:title" content="情绪小球">
+<meta property="og:title" content="Qball">
 <meta property="og:description" content="会做表情的 AI 小助手:打字或说话都能聊,有思考卡片、语音回复和细腻动效。">
 <meta property="og:image" content="icons/icon-512.png">
 <meta property="og:type" content="website">
@@ -528,7 +528,7 @@
   .dev-logs { overflow-y: auto; padding: 6px 12px 10px; line-height: 1.75; color: #b8b8c0; scrollbar-width: thin; }
   .dev-line { white-space: pre-wrap; word-break: break-all; }
   .dev-line .t { color: rgba(236, 234, 244, 0.35); }
-  /* ================= Agora 动效层(参数复刻自 newo-ether/Agora,MIT) ================= */
+  /* ================= Qball 动效层 ================= */
   #blob-canvas {
     position: fixed;
     inset: 0;
@@ -1275,7 +1275,7 @@
 <body>
 
 <canvas id="blob-canvas"></canvas>
-<div class="demo-tag">agora motion demo</div>
+<div class="demo-tag">qball</div>
 <button id="newchat-chip" type="button" title="清空对话并重新开始">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
   新对话
@@ -1444,7 +1444,7 @@
     <div class="setting-row">
       <div>
         <div class="st-title">减弱动态效果</div>
-        <div class="st-desc">复刻 Agora 的动效降级策略:关闭连续运动、空间转场与程序化滚动,仅保留透明度反馈;并与系统「减弱动态效果」设置联动。</div>
+        <div class="st-desc">动效降级策略:关闭连续运动、空间转场与程序化滚动,仅保留透明度反馈;并与系统「减弱动态效果」设置联动。</div>
       </div>
       <label class="switch"><input id="set-reduced" type="checkbox"><span class="knob"></span></label>
     </div>
@@ -1500,7 +1500,7 @@
     },
     strip: function (s) { return String(s == null ? '' : s); }
   };
-  var HISTORY_KEY = 'agoraDemo.history.v1';
+  var HISTORY_KEY = 'qball.history.v1';
   var CONTEXT_TOKENS = 1400;
   var MAX_HISTORY_MSGS = 40;
 
@@ -1547,8 +1547,8 @@
 
   /* ---------------- 访问码与鉴权 ---------------- */
 
-  var ACCESS_KEY = 'agoraDemo.accessCode';
-  var USER_CFG_KEY = 'agoraDemo.api.v1';
+  var ACCESS_KEY = 'qball.accessCode';
+  var USER_CFG_KEY = 'qball.api.v1';
   var authState = { required: false, admin: false };
 
   function loadUserCfg() {
@@ -2652,10 +2652,10 @@
   obEls.edit.addEventListener('click', backToForm);
   obEls.edit2.addEventListener('click', backToForm);
 
-  var AM = window.AgoraMotion;
+  var AM = window.QballMotion;
   var policy = AM.createPolicy();
 
-  var ball = EmotionBall.create(host, { emotion: '02', idle: true });
+  var ball = Qball.create(host, { emotion: '02', idle: true });
   ball.spin = function () { return this; };
 
   var blobs = AM.createBlobs(blobCanvas, { policy: policy });
@@ -2715,7 +2715,7 @@
   var abortCtl = null;
   var robot = true;
   var muted = false;
-  try { muted = localStorage.getItem('agoraDemo.muted') === '1'; } catch (e) {}
+  try { muted = localStorage.getItem('qball.muted') === '1'; } catch (e) {}
 
   var audioCtx = null;
   var currentAudio = null;
@@ -3050,7 +3050,7 @@
 
   var MOCK_THINK = '让我想想怎么回答比较好……\n1. 先打个招呼\n2. 展示一下思考卡片:流式写完之后会自动折叠\n3. 再用一段带格式的回答,演示 Markdown 渲染';
 
-  var MOCK_TEXT = '你好呀,我是**小球**。现在是本地演示模式,所有动效都是真的:\n\n- 流式尾巴的圆点在**呼吸**\n- 回答逐字浮现,支持 *斜体*、`行内代码`、~~删除线~~\n- 上面的思考过程会自动收进小卡片,点一下还能展开\n\n比如这段代码:\n\n```js\nball.setEmotion("10"); // 开心\n```\n\n> 等接口恢复,把地址里的 mock=1 去掉,就能连上真正的大模型了。项目源码在 [Agora](https://github.com/newo-ether/Agora)。';
+  var MOCK_TEXT = '你好呀,我是**小球**。现在是本地演示模式,所有动效都是真的:\n\n- 流式尾巴的圆点在**呼吸**\n- 回答逐字浮现,支持 *斜体*、`行内代码`、~~删除线~~\n- 上面的思考过程会自动收进小卡片,点一下还能展开\n\n比如这段代码:\n\n```js\nball.setEmotion("10"); // 开心\n```\n\n> 等接口恢复,把地址里的 mock=1 去掉,就能连上真正的大模型了。项目源码在 [Qball](https://github.com/woshi32s/Qball)。';
 
   function mockChatStream(message, signal, onEvent) {
     return new Promise(function (resolve, reject) {
@@ -3153,7 +3153,7 @@
 
   var immersive = false;
   try {
-    var immRaw = localStorage.getItem('agoraDemo.immersive');
+    var immRaw = localStorage.getItem('qball.immersive');
     immersive = immRaw === null ? false : immRaw !== '0';
   } catch (e) {}
   var chatMode = false;
@@ -3527,7 +3527,7 @@
     var next = immersiveInput.checked;
     if (next !== immersive) {
       immersive = next;
-      try { localStorage.setItem('agoraDemo.immersive', immersive ? '1' : '0'); } catch (e) {}
+      try { localStorage.setItem('qball.immersive', immersive ? '1' : '0'); } catch (e) {}
       applyMode();
     }
   }
@@ -3540,8 +3540,8 @@
   if (replayEl) {
     replayEl.addEventListener('click', function () {
       try {
-        localStorage.removeItem('agoraDemo.api.v1');
-        localStorage.removeItem('agoraDemo.accessCode');
+        localStorage.removeItem('qball.api.v1');
+        localStorage.removeItem('qball.accessCode');
       } catch (e) {}
       location.reload();
     });
@@ -4247,7 +4247,7 @@
     skipBoot();
     muted = !muted;
     dlog('mute ' + (muted ? 'on' : 'off'));
-    try { localStorage.setItem('agoraDemo.muted', muted ? '1' : '0'); } catch (e) {}
+    try { localStorage.setItem('qball.muted', muted ? '1' : '0'); } catch (e) {}
     if (muted) {
       speech.queue.length = 0;
       stopAudio();
@@ -4346,7 +4346,7 @@
     if (authState.required && !getAccessCode()) showCodeModal('');
   }).catch(function () {
     dlog('server unreachable');
-    if (!MOCK) setStatus('未连接本地服务:请先运行 server.py(或 EmotionBall.exe),再访问它提示的地址', true);
+    if (!MOCK) setStatus('未连接本地服务:请先运行 server.py(或 Qball.exe),再访问它提示的地址', true);
   });
 })();
 </script>

@@ -1,8 +1,8 @@
 <div align="center">
 
-# Ballie · An expressive AI ball
+# Qball
 
-**A tiny expressive AI assistant for the web — cinematic onboarding · bring-your-own-key**
+**An expressive AI assistant for the web — cinematic onboarding · bring-your-own-key**
 
 [![License](https://img.shields.io/badge/license-non--commercial-blue)](LICENSE)
 [![Deploy](https://img.shields.io/badge/deploy-docker%20%2B%20caddy-2496ED)](DEPLOY.md)
@@ -15,7 +15,7 @@
 
 ## What is this
 
-Ballie is an AI assistant living inside an expressive ball on a web page, wrapped in a **cinematic onboarding experience**:
+Qball is an AI assistant living inside an expressive ball on a web page, wrapped in a **cinematic onboarding experience**:
 
 - **Opening show**: spring-driven camera moves, typewriter headline, pop-able feature icons, an auto-focused input card, 12 brand model bubbles orbiting the panel, close-up selection flying into the ball's brain, live connection test — then chat.
 - **Chat**: streaming output, collapsible thinking cards, incremental Markdown, smart auto-follow scroll (yields instantly when you scroll up).
@@ -42,10 +42,10 @@ cp .env.example .env    # set DOMAIN
 docker compose up -d --build
 ```
 
-## Credits & License
+## Credits & Notices
 
-- The ball engine comes from the open-source **Emotion Ball** project by **sam70361**, under a *Learning & Exchange (non-commercial)* license:
-  - keep [LICENSE](LICENSE) and attribution for non-commercial use;
-  - **commercial use requires a written license**: 1251579308@qq.com (see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)).
-- Model brand icons: [lobe-icons](https://github.com/lobehub/lobe-icons) (MIT); trademarks belong to their owners.
-- Motion language inspired by [newo-ether/Agora](https://github.com/newo-ether/Agora) (MIT).
+- **The ball character and expression engine come from the open-source "Emotion Ball" project** by **sam70361**, licensed for learning & exchange (non-commercial):
+  - for non-commercial use, keep [LICENSE](LICENSE) and attribution;
+  - for commercial use, obtain a written license first — **1251579308@qq.com** (see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md));
+  - original preview: https://emotion-balls.vercel.app/
+- Model brand icons: [lobe-icons](https://github.com/lobehub/lobe-icons) (MIT); trademarks belong to their owners, used for identification only.

@@ -1,4 +1,4 @@
-"""情绪小球 · 生产版服务端(Flask)
+"""Qball · 生产版服务端(Flask)
 
 本地运行:  python server.py                  # 自动打开浏览器,默认 127.0.0.1:8600
 公网部署:  waitress-serve --listen=0.0.0.0:8600 server:app   # 见 DEPLOY.md / docker-compose.yml
@@ -79,7 +79,7 @@ EMOTIONS = [
 EMOTION_IDS = {e[0] for e in EMOTIONS}
 
 SYSTEM_PROMPT = (
-    "You are Ballie, a tiny expressive assistant living inside a cute emotion ball on screen. "
+    "You are Ballie, a tiny expressive assistant living inside a cute expressive ball on screen. "
     "Your reply is displayed as a subtitle and read aloud by a text-to-speech voice. "
     "Always answer in Simplified Chinese, 2 short sentences at most, warm and playful, no emoji. "
     "You may use light Markdown (**bold**, `code`, - lists) when it helps. "
@@ -90,7 +90,7 @@ SYSTEM_PROMPT = (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("emotion-ball")
+log = logging.getLogger("qball")
 
 
 def _env_flag(name, default=True):
@@ -804,7 +804,7 @@ def api_tts():
 
 @app.get("/")
 def index():
-    return serve_static("agora-demo.html")
+    return serve_static("qball.html")
 
 
 @app.get("/<path:path>")
@@ -834,8 +834,8 @@ def serve_static(path):
 def main():
     host = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = int(os.environ.get("PORT", "8600"))
-    if not (ROOT / "agora-demo.html").exists():
-        print("agora-demo.html is missing next to server.py")
+    if not (ROOT / "qball.html").exists():
+        print("qball.html is missing next to server.py")
         sys.exit(1)
     if not ACCESS_CODE:
         log.warning("ACCESS_CODE 未设置:任何人都可以直接调用接口(仅适合本地使用)")
@@ -845,7 +845,7 @@ def main():
     from waitress import serve as waitress_serve
 
     url = "http://%s:%d/" % ("127.0.0.1" if host in ("0.0.0.0", "::") else host, port)
-    log.info("emotion ball -> %s", url)
+    log.info("Qball -> %s", url)
     log.info("model: %s | voice: %s | key: %s | access code: %s",
              CONFIG["model"], CONFIG["voice"],
              "loaded" if CONFIG["api_key"] else "MISSING",
