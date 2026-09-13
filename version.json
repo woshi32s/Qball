@@ -1,10 +1,10 @@
 {
   "version": "0.2.0",
   "url": "https://github.com/woshi32s/Qball/releases/download/v0.2.0/Qball.exe",
-  "sha256": "b10685e72e4af13459195624c7109bbec0d57885bf76515ed7ff233e62f5f2fc",
+  "sha256": "2799d8e01ef0441d74c6fa19f5e481887ab86d91ee74d2bc1d71043d187aa630",
   "mirrors": [
     "https://ghproxy.net/https://github.com/woshi32s/Qball/releases/download/v0.2.0/Qball.exe",
     "https://gh-proxy.com/https://github.com/woshi32s/Qball/releases/download/v0.2.0/Qball.exe"
   ],
-  "notes": "首个本机安装版:单文件 EXE、免装 Python、开机自启、qball 命令行工具"
+  "notes": "见 Release 说明"
 }
