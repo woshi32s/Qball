@@ -1,0 +1,44 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      B_AI_BASE: ${B_AI_BASE:-https://api.b.ai/v1}
+      B_AI_KEY: ${B_AI_KEY}
+      B_AI_MODEL: ${B_AI_MODEL:-qwen3.8-flash}
+      TTS_VOICE: ${TTS_VOICE:-zh-CN-XiaoxiaoNeural}
+      ACCESS_CODE: ${ACCESS_CODE}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      TTS_ENABLED: ${TTS_ENABLED:-1}
+      DAILY_LLM_LIMIT: ${DAILY_LLM_LIMIT:-500}
+      RATE_CHAT_PER_MIN: ${RATE_CHAT_PER_MIN:-10}
+      RATE_TTS_PER_MIN: ${RATE_TTS_PER_MIN:-20}
+    expose:
+      - "8600"
+    networks:
+      - web
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - web
+
+networks:
+  web:
+
+volumes:
+  caddy_data:
+  caddy_config:

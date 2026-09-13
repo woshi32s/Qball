@@ -1,0 +1,17 @@
+{
+  "name": "情绪小球",
+  "short_name": "小球",
+  "description": "会做表情的 AI 小助手,支持语音对话与动效演示",
+  "start_url": "/agora-demo.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#060607",
+  "theme_color": "#060607",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

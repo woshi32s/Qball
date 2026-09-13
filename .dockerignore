@@ -1,0 +1,14 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+dist
+build
+*.spec
+EmotionBall.exe
+config.json
+.env
+docs
+README*.md
+LICENSE*
+*.log
