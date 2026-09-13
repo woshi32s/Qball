@@ -197,8 +197,9 @@ function Invoke-Doctor {
 
 function Get-RemoteVersion {
   foreach ($u in @(
+      "https://raw.githubusercontent.com/$Repo/main/version.json",
       "https://cdn.jsdelivr.net/gh/$Repo@main/version.json",
-      "https://raw.githubusercontent.com/$Repo/main/version.json")) {
+      "https://fastly.jsdelivr.net/gh/$Repo@main/version.json")) {
     try { return Invoke-RestMethod $u -TimeoutSec 15 } catch { }
   }
   return $null

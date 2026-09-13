@@ -2,11 +2,11 @@
 
 # Qball
 
-**一个会做表情的 AI 小助手 —— 开场演出式引导 · 访客自带 Key · 点开即用**
+**住在你电脑里的 AI 小助手 —— 一颗会做表情的球 · 一条命令装好 · Key 与数据都在本机**
 
+[![Release](https://img.shields.io/github/v/release/woshi32s/Qball)](https://github.com/woshi32s/Qball/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D4)](#安装windows)
 [![License](https://img.shields.io/badge/license-非商业授权-blue)](LICENSE)
-[![Deploy](https://img.shields.io/badge/deploy-docker%20%2B%20caddy-2496ED)](DEPLOY.md)
-[![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8)](#)
 
 [中文](README.md) | [English](README.en.md)
 
@@ -17,46 +17,87 @@
 
 ## 这是什么
 
-Qball 是一个长在网页里的 AI 小助手,有一颗会做表情的球和一套**开场演出式**的使用体验:
+Qball 是一个运行在**你自己电脑上**的 AI 小助手:不需要租服务器、不需要注册登录,模型 Key 只保存在本机(`~/.qball`)。
 
-- **开场演出**:镜头弹簧运镜 → 大字逐字浮现 → 点一下球 → 能力图标依次爆破 → 输入卡片弹出(自动聚焦+手形引导)→ 12 个品牌模型气泡绕场 → 选中特写「嗖」地飞进小球大脑 → 小球亲自测试连接 → 进入聊天
-- **对话体验**:流式输出、思考分段卡片、增量 Markdown 渲染、自动跟随滚动(你往上拖,它绝不抢)
-- **语音**:AI 回答自动朗读(edge-tts + 机器人音色);点击/长按麦克风即可说话
-- **访客自带 Key(BYOK)**:访客的接口配置只存在自己的浏览器里,服务端只做转发,不落库、不共享;站主零成本
-- **PWA / 触屏适配**:手机加到主屏就像原生 App;桌面端有悬停交互、快捷键和开发者面板(F3)
+- **一条命令安装**:自动下载安装、配置开机自启、开始菜单随时能打开;`qball uninstall` 一句话卸载
+- **点开即用**:浏览器打开就是它 —— 会做表情的小球、开场演出式引导、流式对话、语音朗读(edge-tts)
+- **任意 OpenAI 兼容接口**:填入 API 地址 / Key / 模型即可(BYOK),不锁定任何一家
+- **本机优先**:对话与配置留在你的电脑里;不依赖任何在线服务(公网部署只是可选项)
+- **PWA**:手机、平板、桌面都能「添加到主屏幕」,体验接近原生 App
 
-## 快速开始(本机)
+## 安装(Windows)
 
-```bash
-pip install -r requirements.txt
-python server.py        # 自动打开 http://127.0.0.1:8600
+### 方式一:一条命令(推荐)
+
+在 PowerShell 里粘贴执行:
+
+```powershell
+iwr -useb https://cdn.jsdelivr.net/gh/woshi32s/Qball@main/install.ps1 | iex
 ```
 
-Windows 下也可以直接双击 `start.bat`(优先使用 `Qball.exe`,其次 `EmotionBall.exe`,都没有则用 Python 运行)。
+它会:读取最新版本 → 下载 `Qball.exe` 并校验 → 安装到 `%LOCALAPPDATA%\Qball` → 配置开机自启 → 启动并打开界面。
 
-> 本机打开时自动识别为管理员,无需访问码;首次进入跟随引导填写自己的接口即可。
+不想开机自启?用带参数的写法:
 
-## 部署到公网(别人点链接就能用)
-
-完整步骤见 **[DEPLOY.md](DEPLOY.md)**:Docker 一条命令 + Caddy 自动 HTTPS。
-
-```bash
-cp .env.example .env    # 至少填写 DOMAIN(没有域名可用免费的 DuckDNS 子域名)
-docker compose up -d --build
+```powershell
+& ([scriptblock]::Create((iwr -useb https://cdn.jsdelivr.net/gh/woshi32s/Qball@main/install.ps1))) -NoStartup
 ```
 
-## 配置说明
+### 方式二:免安装直接跑
 
-| 角色 | 怎么配 |
+到 [Releases](https://github.com/woshi32s/Qball/releases) 下载 `Qball.exe` 双击即可 —— 单文件,自带全部界面资源,不需要 Python。想把它加入 PATH / 开机自启时,再运行一次方式一即可。
+
+> 首次运行 Windows 可能提示「未知发布者」(exe 未签名),点「更多信息 → 仍要运行」即可。
+
+## qball 命令
+
+安装后新开一个终端(PATH 已自动配好):
+
+| 命令 | 说明 |
 |---|---|
-| 访客 | 首次打开跟随引导,填写任意 OpenAI 兼容接口(地址 / Key / 模型),配置仅存于其浏览器 |
-| 站主 | 环境变量(见 `.env.example`);**切勿提交 `config.json`**(已在 .gitignore,且服务端静态白名单拒绝访问) |
+| `qball start` / `qball stop` | 启动 / 退出 |
+| `qball status` / `qball doctor` | 查看运行状态 / 环境体检 |
+| `qball logs` | 查看最近日志(`-Tail 50` 看更多) |
+| `qball open` | 打开界面 |
+| `qball update` | 更新到最新版 |
+| `qball autostart on` / `qball autostart off` | 开机自启开关 |
+| `qball uninstall` / `qball uninstall -Purge` | 卸载 / 连数据一起卸载 |
+
+## 数据在哪
+
+| 内容 | 位置 |
+|---|---|
+| 配置 / 日志 / 端口记录 | `%USERPROFILE%\.qball`(config.json、logs、port.txt) |
+| 对话记录 | 浏览器的 localStorage(仅本机浏览器) |
+| 程序本体 | `%LOCALAPPDATA%\Qball` |
 
 ## 常见问题
 
-- **语音不响?** 公网必须 HTTPS 才能使用麦克风;检查浏览器是否拦截自动播放。
-- **拉取模型失败?** 部分接口不支持 `/models`,可直接手动输入模型名。
-- **想重看开场引导?** 设置面板底部有「重播开场引导」。
+- **下载慢或失败?** 安装器会自动切换镜像源;仍不行可先开启代理,或手动下载 Release 里的 `Qball.exe` 双击使用。
+- **端口被占用?** Qball 会自动在 8600–8610 之间选择空闲端口,并记住上次的选择。
+- **重复双击图标?** 检测到已在运行时会直接打开现有页面,不会重复启动。
+- **怎么换模型 / 接口?** 页面「设置」里修改(首次打开会有引导),配置只存本机。
+- **怎么彻底删除?** `qball uninstall -Purge`,再删掉 `%LOCALAPPDATA%\Qball` 目录即可。
+
+## 从源码运行(开发)
+
+```bash
+pip install -r requirements.txt
+python server.py          # http://127.0.0.1:8600,自动打开浏览器
+```
+
+打包单文件 EXE:
+
+```powershell
+pip install pyinstaller
+python -m PyInstaller Qball.spec --noconfirm    # 产物:dist\Qball.exe
+```
+
+发新版本:更新 `server.py` 里的 `VERSION` → 打 tag(`git tag v0.2.0 && git push --tags`)→ GitHub Actions 自动构建、冒烟测试并发布 Release(同时更新 `version.json`)。
+
+## 部署到公网(可选)
+
+想让朋友点链接就用、自己不用装?见 [DEPLOY.md](DEPLOY.md)(Docker + Caddy 自动 HTTPS)。普通本机使用**不需要**这一步。
 
 ## 声明
 

@@ -63,7 +63,7 @@ if ($localRoot) {
 $remote = $null
 if (-not $localExe) {
   Write-Step "获取最新版本信息..."
-  foreach ($u in @("https://cdn.jsdelivr.net/gh/$Repo@main/version.json", "https://raw.githubusercontent.com/$Repo/main/version.json")) {
+  foreach ($u in @("https://raw.githubusercontent.com/$Repo/main/version.json", "https://cdn.jsdelivr.net/gh/$Repo@main/version.json", "https://fastly.jsdelivr.net/gh/$Repo@main/version.json")) {
     try { $remote = Invoke-RestMethod $u -TimeoutSec 20; break } catch { }
   }
   if (-not $remote) { Write-Bad "无法获取版本信息,请检查网络后重试"; exit 1 }
@@ -134,7 +134,7 @@ if ($localScripts) {
 } else {
   foreach ($f in @("qball.ps1", "qball.cmd")) {
     $out = Join-Path $InstallDir $f
-    if (-not (Download-File "https://cdn.jsdelivr.net/gh/$Repo@main/$f" @("https://raw.githubusercontent.com/$Repo/main/$f") $out $null)) {
+    if (-not (Download-File "https://raw.githubusercontent.com/$Repo/main/$f" @("https://cdn.jsdelivr.net/gh/$Repo@main/$f", "https://fastly.jsdelivr.net/gh/$Repo@main/$f") $out $null)) {
       Write-Bad "下载 $f 失败"
       exit 1
     }

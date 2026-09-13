@@ -1470,6 +1470,23 @@
       <button id="cfg-save" class="mini-btn primary" type="button">保存</button>
     </div>
     <div class="settings-privacy">对话记录与模型配置仅保存在你的浏览器本地,不会上传到服务器。</div>
+    <div class="cfg-title">关于 Qball</div>
+    <div class="setting-row">
+      <div>
+        <div class="st-title">版本</div>
+        <div class="st-desc" id="about-version">Qball · 读取中…</div>
+        <div class="st-desc" id="about-update-status"></div>
+      </div>
+      <button id="about-check" class="mini-btn" type="button">检查更新</button>
+    </div>
+    <div class="setting-row" id="autostart-row" style="display:none">
+      <div>
+        <div class="st-title">开机自启</div>
+        <div class="st-desc">登录 Windows 后自动在后台待命,随时打开页面就能用。</div>
+      </div>
+      <label class="switch"><input id="set-autostart" type="checkbox"><span class="knob"></span></label>
+    </div>
+    <button class="settings-foot" id="about-quit" type="button" style="display:none">退出 Qball(关闭本机服务)</button>
     <button class="settings-foot" id="settings-replay" type="button">重播开场引导(清除本机保存的接口配置)</button>
     <button class="settings-foot" id="settings-foot" type="button">按 F3(或点这里)打开开发者面板 · 日志 / API 状态 / 帧率</button>
   </div>
@@ -3453,7 +3470,27 @@
     cfgStatus.classList.toggle('error', !!isError);
   }
 
+  var serverCfg = null;
   function loadUserConfigPanel() {
+    if (authState.admin) {
+      apiFetch('/api/config').then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      }).then(function (cfg) {
+        serverCfg = cfg;
+        cfgBase.value = cfg.api_base || '';
+        cfgModel.value = cfg.model || '';
+        cfgKey.value = '';
+        cfgKey.placeholder = cfg.key ? '已保存 · 留空则不改动' : 'sk-...';
+        setCfgStatus('本机配置文件已加载' + (cfg.model ? ' · ' + cfg.model : ''));
+      }).catch(function () {
+        loadUserConfigPanelLocal();
+      });
+      return;
+    }
+    loadUserConfigPanelLocal();
+  }
+  function loadUserConfigPanelLocal() {
     if (userCfg) {
       cfgBase.value = userCfg.base || '';
       cfgModel.value = userCfg.model || '';
@@ -3496,10 +3533,38 @@
   cfgSave.addEventListener('click', function () {
     var base = cfgBase.value.trim();
     var model = cfgModel.value.trim();
-    var key = cfgKey.value.trim() || (userCfg && userCfg.key) || '';
+    var typedKey = cfgKey.value.trim();
+    var localKey = (userCfg && userCfg.key) || '';
+    var serverKey = !!(serverCfg && serverCfg.key);
+    var key = typedKey || localKey;
     if (!/^https?:\/\//.test(base)) { setCfgStatus('API 地址需要以 http:// 或 https:// 开头', true); return; }
-    if (!key) { setCfgStatus('请填写 API Key', true); return; }
+    if (!key && !(authState.admin && serverKey)) { setCfgStatus('请填写 API Key', true); return; }
     if (!model) { setCfgStatus('请填写模型名', true); return; }
+    if (authState.admin) {
+      var payload = { api_base: base, model: model };
+      if (typedKey) payload.api_key = typedKey;
+      cfgSave.disabled = true;
+      apiFetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+          serverCfg = data;
+          if (typedKey) { userCfg = { base: base, key: typedKey, model: model }; saveUserCfg(userCfg); }
+          cfgKey.value = '';
+          cfgKey.placeholder = '已保存 · 留空则不改动';
+          setCfgStatus('已保存到本机配置文件 · ' + model);
+          setStatus('配置已更新');
+          dlog('server api saved · ' + base + ' · ' + model);
+          if (dev.open) renderDevStatus();
+        });
+      }).catch(function (err) {
+        setCfgStatus('保存失败:' + ((err && err.message) || err), true);
+      }).then(function () { cfgSave.disabled = false; });
+      return;
+    }
     userCfg = { base: base, key: key, model: model };
     saveUserCfg(userCfg);
     cfgKey.value = '';
@@ -3544,6 +3609,95 @@
         localStorage.removeItem('qball.accessCode');
       } catch (e) {}
       location.reload();
+    });
+  }
+
+  /* ---------------- 关于 Qball:版本 / 更新 / 开机自启 / 退出 ---------------- */
+
+  var aboutVersionEl = document.getElementById('about-version');
+  var aboutStatusEl = document.getElementById('about-update-status');
+  var aboutCheckEl = document.getElementById('about-check');
+  var autostartRow = document.getElementById('autostart-row');
+  var autostartInput = document.getElementById('set-autostart');
+  var quitEl = document.getElementById('about-quit');
+  var appVersion = '';
+
+  apiFetch('/api/health').then(function (res) { return res.json(); }).then(function (data) {
+    appVersion = data.version || '';
+    if (aboutVersionEl) aboutVersionEl.textContent = 'Qball v' + (appVersion || '?') + (data.admin ? ' · 本机模式' : '');
+    if (!data.admin) return;
+    if (quitEl) quitEl.style.display = '';
+    apiFetch('/api/autostart').then(function (res) { return res.json(); }).then(function (info) {
+      if (!info || !info.supported || !autostartRow) return;
+      autostartRow.style.display = '';
+      autostartInput.checked = !!info.enabled;
+    }).catch(function () {});
+  }).catch(function () {
+    if (aboutVersionEl) aboutVersionEl.textContent = 'Qball(未能读取版本)';
+  });
+
+  if (autostartInput) {
+    autostartInput.addEventListener('change', function () {
+      var enabled = autostartInput.checked;
+      autostartInput.disabled = true;
+      apiFetch('/api/autostart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled })
+      }).then(function (res) { return res.json(); }).then(function (data) {
+        autostartInput.checked = !!data.enabled;
+        setStatus(data.enabled ? '开机自启已开启' : '开机自启已关闭');
+      }).catch(function () {
+        autostartInput.checked = !enabled;
+        setStatus('设置失败,请稍后再试');
+      }).then(function () { autostartInput.disabled = false; });
+    });
+  }
+
+  if (aboutCheckEl) {
+    aboutCheckEl.addEventListener('click', function () {
+      aboutCheckEl.disabled = true;
+      aboutCheckEl.textContent = '检查中…';
+      function done(msg) {
+        if (aboutStatusEl) aboutStatusEl.textContent = msg;
+        aboutCheckEl.disabled = false;
+        aboutCheckEl.textContent = '检查更新';
+      }
+      var urls = [
+        'https://raw.githubusercontent.com/woshi32s/Qball/main/version.json',
+        'https://cdn.jsdelivr.net/gh/woshi32s/Qball@main/version.json',
+        'https://fastly.jsdelivr.net/gh/woshi32s/Qball@main/version.json'
+      ];
+      function attempt(i) {
+        if (i >= urls.length) { done('检查失败,可能是网络受限'); return; }
+        fetch(urls[i], { cache: 'no-store' }).then(function (r) {
+          if (!r.ok) throw new Error('http ' + r.status);
+          return r.json();
+        }).then(function (v) {
+          if (v && v.version) {
+            done(v.version === appVersion
+              ? '已是最新版(v' + appVersion + ')'
+              : '发现新版本 v' + v.version + ':在终端运行 qball update 即可更新');
+          } else {
+            attempt(i + 1);
+          }
+        }).catch(function () { attempt(i + 1); });
+      }
+      attempt(0);
+    });
+  }
+
+  if (quitEl) {
+    quitEl.addEventListener('click', function () {
+      if (!window.confirm('确定退出 Qball 吗?退出后需要重新启动才能继续对话。')) return;
+      quitEl.disabled = true;
+      apiFetch('/api/shutdown', { method: 'POST' }).then(function () {
+        quitEl.textContent = '已退出,可关闭此页面';
+        setStatus('Qball 已退出');
+      }).catch(function () {
+        quitEl.disabled = false;
+        setStatus('退出失败,请在终端运行 qball stop');
+      });
     });
   }
   settingsHandle.addEventListener('click', openSettings);
