@@ -58,7 +58,11 @@ CONFIG_DEFAULTS = {
     "app_dir": "",
     "consolidate_addendum_chars": 1500,   # 附加指令超过此长度触发知识合并
     "consolidate_skills": 8,              # 技能超过此数量触发知识合并
-    "retire_after_fails": 5,              # 卡题连败次数上限(达到则退休)
+    "retire_after_fails": 3,              # 卡题连败次数上限(达到即退休,腾出探索空间)
+    "task_library_limit": 30,             # 任务库上限;满时退休最弱的自产任务再补充
+    "soft_mastery": 0.85,                 # 软任务的"已掌握"分数线(达到后不再常驻轮换)
+    "regression_quiet_scores": 3,         # 连续 N 次高分后,该任务视为回归演练:改动只记录不采纳
+    "regression_quiet_min": 0.85,
 }
 
 META_SYSTEM = (
@@ -326,9 +330,13 @@ def pick_task(state_dir):
     if not tasks:
         return None
     st = load_state(state_dir)
+    cfg = load_config(state_dir)
+    soft_target = float(cfg.get("soft_mastery", 0.85))
     last_scores = {}
+    last_kind = {}
     for line in read_jsonl(paths(state_dir)["scores"])[-200:]:
         last_scores[line.get("task")] = line.get("score", 0)
+        last_kind[line.get("task")] = line.get("kind")
     fails = st.get("task_fails") or {}
     candidates = [t for t in tasks if int(fails.get(t["id"], 0)) < 3]
     if not candidates:
@@ -338,7 +346,12 @@ def pick_task(state_dir):
         st["task_fails"] = fails
         save_state(state_dir, st)
         candidates = [t for t in tasks if int(fails.get(t["id"], 0)) < 3] or list(tasks)
-    pending = [t for t in candidates if last_scores.get(t["id"], -1) < 1.0]
+
+    def target_of(t):
+        kind = t.get("kind") or last_kind.get(t["id"])
+        return 1.0 if kind != "soft" else soft_target
+
+    pending = [t for t in candidates if last_scores.get(t["id"], -1) < target_of(t)]
     pool = pending or candidates
     pool.sort(key=lambda t: (last_scores.get(t["id"], -1), t.get("priority", 50)))
     return pool[0]
@@ -565,8 +578,26 @@ def validate_new_task(obj, existing_titles):
 def generate_task(state_dir, cfg, server):
     p = paths(state_dir)
     tasks = bench_tasks(state_dir)
-    if len(tasks) >= 30:
-        return None, "任务库已满(30)"
+    limit = int(cfg.get("task_library_limit", 30))
+    if len(tasks) >= limit:
+        # 腾位置:退休"自产且最近得分最低"的旧任务(种子任务保留)
+        last_scores = {}
+        for line in read_jsonl(p["scores"])[-200:]:
+            last_scores[line.get("task")] = line.get("score", 0)
+        agent_tasks = [t for t in tasks if t.get("created_by") == "agent"]
+        if not agent_tasks:
+            return None, "任务库已满(无可退休的自产任务)"
+        weakest = min(agent_tasks, key=lambda t: (last_scores.get(t["id"], -1), t.get("created_at", "")))
+        try:
+            retired_dir = p["root"] / "bench" / "retired"
+            retired_dir.mkdir(parents=True, exist_ok=True)
+            src = p["tasks"] / ("%s.json" % weakest["id"])
+            if src.exists():
+                src.replace(retired_dir / src.name)
+            log("task library full: retired %s (%s)" % (weakest["id"], weakest.get("title", "")))
+        except OSError as exc:
+            return None, "腾位失败: %s" % exc
+        tasks = bench_tasks(state_dir)
     menu = "\n".join("- %s:%s" % (t["title"], (t.get("prompt") or "")[:80]) for t in tasks[-10:]) or "(空)"
     try:
         data = server.chat(TASK_GEN_PROMPT % menu, cfg["executor_model"], system=META_SYSTEM)
@@ -845,6 +876,23 @@ def run_generation(state_dir, cfg=None, server=None):
         append_jsonl(p["usage"], {"when": now(), "gen": gen, "phase": phase, "model": model,
                                   "est_tokens": max(1, len(text or "") // 3)})
 
+    # 维护:把"连败达到上限"的卡题移入退休区(含历史遗留状态),腾出探索空间
+    try:
+        fails_map0 = st.get("task_fails") or {}
+        retire_at = int(cfg.get("retire_after_fails", 3))
+        for t in bench_tasks(state_dir):
+            if int(fails_map0.get(t["id"], 0)) >= retire_at:
+                retired_dir = p["root"] / "bench" / "retired"
+                retired_dir.mkdir(parents=True, exist_ok=True)
+                src = p["tasks"] / ("%s.json" % t["id"])
+                if src.exists():
+                    src.replace(retired_dir / src.name)
+                fails_map0.pop(t["id"], None)
+                step("retire-task", t["id"])
+        st["task_fails"] = fails_map0
+    except Exception as exc:  # noqa: BLE001
+        log("stuck cleanup failed: %s" % exc)
+
     # 知识库维护代:附加指令过长或技能过多时,本代专门做知识合并
     try:
         if needs_consolidation(cfg, p):
@@ -940,8 +988,21 @@ def run_generation(state_dir, cfg=None, server=None):
     step("propose", result["proposal_summary"][:80] or "无有效提案")
 
     changed = []
+    regression_quiet = False
+    try:
+        quiet_n = int(cfg.get("regression_quiet_scores", 3))
+        quiet_min = float(cfg.get("regression_quiet_min", 0.85))
+        hist = [line.get("score", 0) for line in read_jsonl(p["scores"])
+                if line.get("task") == task["id"]][-quiet_n:]
+        if len(hist) >= quiet_n and all(float(s) >= quiet_min for s in hist):
+            regression_quiet = True
+    except Exception:  # noqa: BLE001
+        pass
     if proposal.get("scaffold") and score < 0.5:
         step("scaffold-gated", "得分 %.2f 偏低:提示词/技能改动仅记录不采纳" % score)
+        proposal["scaffold"] = {}
+    elif proposal.get("scaffold") and regression_quiet:
+        step("scaffold-quiet", "回归演练(该任务连续高分):改动仅记录不采纳")
         proposal["scaffold"] = {}
     if proposal.get("scaffold") or proposal.get("code"):
         if shadow:
