@@ -33,6 +33,12 @@ const FAKE = process.env.EB_FAKE || 'http://127.0.0.1:8484';
   log(pre.model === 'fake-model-alpha', 'config prefill model', pre.model);
   log(/已保存/.test(pre.keyPh), 'key placeholder masked state', pre.keyPh);
 
+  // 管理员不输 Key 也能拉取(用本机已保存的 Key)——回归:之前误报"先填写 API 地址和 Key"
+  await page.click('#cfg-fetch');
+  await page.waitForFunction(() => /拉取成功|拉取失败/.test(document.getElementById('cfg-status').textContent), null, { timeout: 20000 }).catch(() => {});
+  const adminFetch = await page.textContent('#cfg-status');
+  log(/拉取成功/.test(adminFetch), 'admin fetch without typing key', adminFetch.trim());
+
   await page.fill('#cfg-key', 'sk-ui-test-123');
   await page.click('#cfg-fetch');
   await page.waitForFunction(() => document.querySelectorAll('#model-list option').length > 0, null, { timeout: 15000 }).catch(() => {});

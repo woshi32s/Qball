@@ -3660,11 +3660,13 @@
 
   cfgFetch.addEventListener('click', function () {
     var base = cfgBase.value.trim();
-    var key = cfgKey.value.trim() || (userCfg && userCfg.key) || '';
-    if (!base || !key) { setCfgStatus('先填写 API 地址和 Key', true); return; }
+    var typedKey = cfgKey.value.trim() || (userCfg && userCfg.key) || '';
+    var hasServerKey = !!(authState.admin && serverCfg && serverCfg.key);
+    if (!base) { setCfgStatus('先填写 API 地址', true); return; }
+    if (!typedKey && !hasServerKey) { setCfgStatus('先填写 API 地址和 Key', true); return; }
     cfgFetch.disabled = true;
     setCfgStatus('正在拉取模型列表…');
-    doFetchModels(base, key).then(function (models) {
+    doFetchModels(base, typedKey).then(function (models) {
       modelList.innerHTML = '';
       models.forEach(function (m) {
         var opt = document.createElement('option');
