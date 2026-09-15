@@ -52,6 +52,11 @@ CONFIG_DEFAULTS = {
     "app_dir": "",
 }
 
+META_SYSTEM = (
+    "你是 Qball 自我进化系统的内部工具,不是聊天助手。"
+    "严格按用户指令执行:只输出要求的 JSON 或文本,不要寒暄、不要表演人设。"
+)
+
 SEED_TASKS = [
     {
         "id": "seed-hello-file",
@@ -320,8 +325,11 @@ class Server:
     def __init__(self, base_url):
         self.base = base_url.rstrip("/")
 
-    def chat(self, message, model, timeout=180):
-        body = json.dumps({"message": message, "history": []}).encode("utf-8")
+    def chat(self, message, model, timeout=180, system=None):
+        payload = {"message": message, "history": []}
+        if system:
+            payload["system"] = system
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(self.base + "/api/chat", data=body, method="POST",
                                      headers={
                                          "Content-Type": "application/json",
@@ -405,7 +413,7 @@ def judge_task(state_dir, cfg, server, task, transcript):
            (transcript.get("text") or "")[:800])
     )
     try:
-        data = server.chat(prompt, cfg["judge_model"])
+        data = server.chat(prompt, cfg["judge_model"], system=META_SYSTEM)
         reply = str(data.get("reply") or "")
         m = re.search(r"\{[\s\S]*\}", reply)
         if m:
@@ -453,7 +461,7 @@ def reflect(state_dir, cfg, server, task, transcript, score, reason):
         "; ".join("%s(%s)" % (t["name"], "ok" if t["ok"] else "fail") for t in transcript.get("tools", [])) or "无",
     )
     try:
-        data = server.chat(prompt, cfg["executor_model"])
+        data = server.chat(prompt, cfg["executor_model"], system=META_SYSTEM)
         text = str(data.get("reply") or "").strip()
     except Exception as exc:  # noqa: BLE001
         text = "反思调用失败: %s" % exc
@@ -472,13 +480,13 @@ def propose(state_dir, cfg, server, reflection):
     addendum = (p["agent"] / "system_prompt_addendum.md").read_text(encoding="utf-8")[:1500] if (p["agent"] / "system_prompt_addendum.md").exists() else ""
     skills = ", ".join(f.name for f in (p["agent"] / "skills").glob("*.md")) or "无"
     try:
-        data = server.chat(PROPOSE_PROMPT % (reflection[:800], addendum, skills), cfg["executor_model"])
+        data = server.chat(PROPOSE_PROMPT % (reflection[:800], addendum, skills), cfg["executor_model"], system=META_SYSTEM)
         reply = str(data.get("reply") or "")
         m = re.search(r"\{[\s\S]*\}", reply)
         obj = json.loads(m.group(0)) if m else {}
     except Exception as exc:  # noqa: BLE001
         return {"error": "提案调用失败: %s" % exc}
-    proposal = {"scaffold": {}, "code_target": None, "summary": str(obj.get("summary") or "")[:200], "raw": {}}
+    proposal = {"scaffold": {}, "code_target": None, "summary": str(obj.get("summary") or "")[:200], "raw_reply": reply[:400]}
     scaffold = obj.get("scaffold")
     if isinstance(scaffold, dict):
         for rel, content in list(scaffold.items())[:5]:
@@ -495,7 +503,7 @@ def propose(state_dir, cfg, server, reflection):
                     content = file_path.read_text(encoding="utf-8", errors="replace")
                     data2 = server.chat(
                         CODE_PROPOSAL_PROMPT % (rel, content, cfg.get("max_find_replace", 200)),
-                        cfg["executor_model"])
+                        cfg["executor_model"], system=META_SYSTEM)
                     reply2 = str(data2.get("reply") or "")
                     m2 = re.search(r"\{[\s\S]*\}", reply2)
                     obj2 = json.loads(m2.group(0)) if m2 else {}

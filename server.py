@@ -345,18 +345,21 @@ def parse_reply(content):
     return eid, reply, action
 
 
-def build_messages(message, history, tools_hint=None):
-    system = SYSTEM_PROMPT
-    if evolution_engine is not None:
-        try:
-            hint = evolution_engine.prompt_addendum(STATE)
-        except Exception:  # noqa: BLE001
-            hint = ""
-        if hint:
-            system = system + "\n\n" + hint
-    if tools_hint:
-        system = system + "\n\n" + tools_hint
-    messages = [{"role": "system", "content": system}]
+def build_messages(message, history, tools_hint=None, system=None):
+    if system:
+        base_system = system
+    else:
+        base_system = SYSTEM_PROMPT
+        if evolution_engine is not None:
+            try:
+                hint = evolution_engine.prompt_addendum(STATE)
+            except Exception:  # noqa: BLE001
+                hint = ""
+            if hint:
+                base_system = base_system + "\n\n" + hint
+        if tools_hint:
+            base_system = base_system + "\n\n" + tools_hint
+    messages = [{"role": "system", "content": base_system}]
     items = []
     for item in (history or []):
         if not isinstance(item, dict):
@@ -470,7 +473,7 @@ def open_chat_stream(messages, api_base=None, api_key=None, api_model=None, tool
         raise RuntimeError("LLM unreachable: %s" % exc.reason)
 
 
-def chat_completion(message, history, api_base=None, api_key=None, api_model=None, session_id=None):
+def chat_completion(message, history, api_base=None, api_key=None, api_model=None, session_id=None, system=None):
     key = (api_key or CONFIG["api_key"] or "").strip()
     base = (api_base or CONFIG["api_base"]).rstrip("/")
     model = (api_model or CONFIG["model"]).strip()
@@ -478,7 +481,7 @@ def chat_completion(message, history, api_base=None, api_key=None, api_model=Non
         raise RuntimeError("no API key: 请在配置页填写你的 API Key(或由站点管理员配置内置 Key)")
     body = json.dumps({
         "model": model,
-        "messages": build_messages(message, history),
+        "messages": build_messages(message, history, system=system),
         "temperature": CONFIG["temperature"],
     }).encode("utf-8")
     req = Request(
@@ -502,9 +505,11 @@ def chat_completion(message, history, api_base=None, api_key=None, api_model=Non
     except URLError as exc:
         raise RuntimeError("LLM unreachable: %s" % exc.reason)
     try:
-        content = data["choices"][0]["message"]["content"]
+        content = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("unexpected LLM response: %s" % json.dumps(data)[:300])
+    if system:
+        return "02", str(content).strip()
     eid, reply, _action = parse_reply(content)
     return eid, reply
 
@@ -886,10 +891,14 @@ def api_chat():
         return api_error(400, "message is empty")
     limit = MAX_MESSAGE_CHARS_LOCAL if is_admin() else MAX_MESSAGE_CHARS
     message = message[:limit]
+    system_override = ""
+    if is_admin():
+        system_override = str(payload.get("system") or "").strip()[:4000]
     try:
         session_id = (request.headers.get("X-Qball-Session") or "").strip()[:64] or None
         eid, reply = chat_completion(message, payload.get("history"),
-                                     base or None, key or None, model or None, session_id)
+                                     base or None, key or None, model or None, session_id,
+                                     system=system_override or None)
     except Exception as exc:
         log.warning("chat failed: %s", exc)
         return api_error(502, str(exc))
