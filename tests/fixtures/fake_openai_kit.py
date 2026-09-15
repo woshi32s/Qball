@@ -39,6 +39,8 @@ RICH_REPLY = (
 
 REASONING = "让我想想怎么回答比较好…… 先抓住重点,再给出简短的回答。"
 
+LAST_HEADERS = {}
+
 # 工具调用脚本(测试用):触发词 → 工具名与参数
 TOOL_TRIGGERS = [
     ("列一下工作区", "fs.list", {"path": "."}),
@@ -94,6 +96,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.endswith("/models"):
             self._json(200, {"object": "list", "data": [{"id": m, "object": "model"} for m in MODELS]})
             return
+        if path == "/debug/last_headers":
+            self._json(200, LAST_HEADERS)
+            return
         self._json(404, {"error": {"message": "not found: " + path}})
 
     def do_POST(self):
@@ -107,6 +112,9 @@ class Handler(BaseHTTPRequestHandler):
         if not path.endswith("/chat/completions"):
             self._json(404, {"error": {"message": "not found: " + path}})
             return
+        LAST_HEADERS.clear()
+        for k, v in self.headers.items():
+            LAST_HEADERS[k.lower()] = v
 
         messages = payload.get("messages") or []
         model = str(payload.get("model") or "fake-model")

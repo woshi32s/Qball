@@ -156,6 +156,8 @@ def ensure_state():
 ensure_state()
 qball_tools.configure(STATE)
 
+USER_AGENT = "Qball/0.2 (+https://github.com/woshi32s/Qball)"
+
 MAX_TOOL_ROUNDS = 8
 _PENDING_APPROVALS = {}
 _APPROVAL_LOCK = threading.Lock()
@@ -387,7 +389,7 @@ class ReplyExtractor:
         return "".join(pieces)
 
 
-def open_chat_stream(messages, api_base=None, api_key=None, api_model=None, tools=None):
+def open_chat_stream(messages, api_base=None, api_key=None, api_model=None, tools=None, session_id=None):
     key = (api_key or CONFIG["api_key"] or "").strip()
     base = (api_base or CONFIG["api_base"]).rstrip("/")
     model = (api_model or CONFIG["model"]).strip()
@@ -411,6 +413,9 @@ def open_chat_stream(messages, api_base=None, api_key=None, api_model=None, tool
         headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + key,
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "x-opencode-session": session_id or uuid.uuid4().hex,
         },
         method="POST",
     )
@@ -423,7 +428,7 @@ def open_chat_stream(messages, api_base=None, api_key=None, api_model=None, tool
         raise RuntimeError("LLM unreachable: %s" % exc.reason)
 
 
-def chat_completion(message, history, api_base=None, api_key=None, api_model=None):
+def chat_completion(message, history, api_base=None, api_key=None, api_model=None, session_id=None):
     key = (api_key or CONFIG["api_key"] or "").strip()
     base = (api_base or CONFIG["api_base"]).rstrip("/")
     model = (api_model or CONFIG["model"]).strip()
@@ -440,6 +445,9 @@ def chat_completion(message, history, api_base=None, api_key=None, api_model=Non
         headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + key,
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "x-opencode-session": session_id or uuid.uuid4().hex,
         },
         method="POST",
     )
@@ -464,7 +472,7 @@ def fetch_model_list(api_base, api_key):
     if not re.match(r"^https?://", base):
         raise ValueError("API 地址需要以 http:// 或 https:// 开头")
     key = (api_key or "").strip() or CONFIG["api_key"]
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     if key:
         headers["Authorization"] = "Bearer " + key
     req = Request(base + "/models", headers=headers, method="GET")
@@ -834,8 +842,9 @@ def api_chat():
     if not message:
         return api_error(400, "message is empty")
     try:
+        session_id = (request.headers.get("X-Qball-Session") or "").strip()[:64] or None
         eid, reply = chat_completion(message[:MAX_MESSAGE_CHARS], payload.get("history"),
-                                     base or None, key or None, model or None)
+                                     base or None, key or None, model or None, session_id)
     except Exception as exc:
         log.warning("chat failed: %s", exc)
         return api_error(502, str(exc))
@@ -898,6 +907,7 @@ def api_chat_stream():
         return api_error(400, "message is empty")
     history = payload.get("history")
     use_tools = bool(CONFIG.get("tools_enabled", True)) and not payload.get("no_tools")
+    session_id = (request.headers.get("X-Qball-Session") or "").strip()[:64] or None
 
     def generate():
         native = use_tools
@@ -911,7 +921,7 @@ def api_chat_stream():
             tool_defs = qball_tools.all_specs() if (use_tools and native) else None
             try:
                 upstream = open_chat_stream(messages, base or None, key or None, model or None,
-                                            tools=tool_defs)
+                                            tools=tool_defs, session_id=session_id)
             except Exception as exc:
                 err = str(exc)
                 if tool_defs and _tools_unsupported(err):

@@ -1616,6 +1616,29 @@
 
   var ACCESS_KEY = 'qball.accessCode';
   var USER_CFG_KEY = 'qball.api.v1';
+  var SESSION_KEY = 'qball.session.v1';
+
+  function makeSessionId() {
+    try {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    } catch (e) {}
+    return 'q' + Date.now().toString(36) + Math.random().toString(16).slice(2);
+  }
+
+  function loadSessionId() {
+    try {
+      var sid = localStorage.getItem(SESSION_KEY);
+      if (!sid) {
+        sid = makeSessionId();
+        localStorage.setItem(SESSION_KEY, sid);
+      }
+      return sid;
+    } catch (e) {
+      return makeSessionId();
+    }
+  }
+
+  var sessionId = loadSessionId();
   var authState = { required: false, admin: false };
 
   function loadUserCfg() {
@@ -1649,6 +1672,7 @@
     for (var k in (opts.headers || {})) headers[k] = opts.headers[k];
     var code = getAccessCode();
     if (code) headers['X-Access-Code'] = code;
+    headers['X-Qball-Session'] = sessionId;
     if (userCfg && userCfg.key) {
       if (userCfg.base) headers['X-API-Base'] = userCfg.base;
       headers['X-API-Key'] = userCfg.key;
@@ -4327,6 +4351,8 @@
     skipBoot();
     turn += 1;
     if (abortCtl) { abortCtl.abort(); abortCtl = null; }
+    sessionId = makeSessionId();
+    try { localStorage.setItem(SESSION_KEY, sessionId); } catch (e) {}
     speech.generation += 1;
     speech.queue.length = 0;
     speech.streamDone = false;

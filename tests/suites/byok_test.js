@@ -73,6 +73,9 @@ async function stream(message, headers) {
   const s2 = await stream('再讲一个', userHeaders);
   log(s2.status === 200 && s2.events.some((e) => e.type === 'text'), 'user-key chat #2 streams (daily quota skipped)', s2.status);
 
+  const hdrs = await j(FAKE + '/debug/last_headers');
+  log(hdrs.status === 200 && !!hdrs.d['x-opencode-session'], 'upstream receives session header', hdrs.d && (hdrs.d['x-opencode-session'] || '').slice(0, 12));
+
   const h2 = await j(C + '/api/health', { headers: userHeaders });
   log(h2.status === 200, 'health fine with user headers');
   console.log(fails === 0 ? 'ALL PASS' : fails + ' FAILURES');
