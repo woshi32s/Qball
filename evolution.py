@@ -106,7 +106,7 @@ def log(msg):
 
 def _read_json(path, default=None):
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return default if default is not None else {}
 
