@@ -1,5 +1,11 @@
 """Qball 自我进化引擎(M1)
 
+核心原则(不可动摇):
+- **不训练模型权重**。模型始终是外部 API(用户配置的云端模型,一个字节都不改)。
+- 本引擎让模型反复执行真实任务,然后改进 **Agent 本身**:
+  行为规则(agent/system_prompt_addendum.md)/ 技能库(agent/skills)/ 记忆(agent/memory)/
+  以及(受最严门禁保护的)代码。
+
 设计:
 - 独立进程(daemon)运行,状态与产物全部放在 ~/.qball/evolution/
 - 执行任务 / 评审 / 反思 / 提案 都通过本机 Qball 服务端(/api/chat_stream、/api/chat)调用,

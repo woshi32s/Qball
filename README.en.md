@@ -24,6 +24,19 @@ Qball is a personal AI assistant running on **your own machine** — no server t
 - **Any OpenAI-compatible API**: bring your own base URL / key / model. BYOK, no lock-in.
 - **Local-first**: chats and settings stay on your machine; public hosting is optional.
 - **PWA**: add to home screen on desktop or mobile.
+- **Self-evolving** (advanced): it practices on real tasks in the background and improves its own agent — see below.
+
+## Self-evolution: improving the agent, not training the model
+
+Qball can practice on real tasks in the background and make **itself** better: it reflects on failures,
+distills lessons into behavior rules and skills, and can even patch its own code. No GPU needed —
+and **the model weights are never touched**.
+
+> The model stays exactly the cloud API you configured — not a single byte changes.
+> What improves is the **agent** (rules, skill library, workflow, code).
+
+Every proposed change must pass three gates: **score gate / path allowlist / full test suite** —
+only green changes are auto-adopted (git-versioned, one-click rollback). See **[docs/EVOLUTION.md](docs/EVOLUTION.md)** (Chinese).
 
 ## Install (Windows)
 
