@@ -1220,6 +1220,49 @@
   .think-card.open .think-body { display: block; }
   .think-text:empty::after { content: '…'; }
 
+  /* ---------- 工具卡片 ---------- */
+  .tool-cards { display: flex; flex-direction: column; gap: 6px; margin: 0 0 6px 2px; max-width: 100%; }
+  .tool-card {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 7px 10px;
+    font-size: 12px;
+    color: rgba(236, 234, 244, 0.85);
+    max-width: 100%;
+  }
+  .tool-head { display: flex; align-items: center; gap: 7px; }
+  .tool-mark { width: 9px; height: 9px; border-radius: 50%; flex: none; background: rgba(255, 255, 255, 0.28); }
+  .tool-card.running .tool-mark { background: #7fd0a0; animation: tailBreath 850ms cubic-bezier(0.4, 0, 0.2, 1) infinite alternate; }
+  body.no-continuous .tool-card.running .tool-mark { animation: none; }
+  .tool-card.done .tool-mark { background: #6fd18f; }
+  .tool-card.failed .tool-mark { background: #ff8a8a; }
+  .tool-name { font-weight: 600; color: rgba(236, 234, 244, 0.95); flex: none; }
+  .tool-args { opacity: 0.55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .tool-body {
+    margin-top: 5px;
+    opacity: 0.75;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 120px;
+    overflow: auto;
+    display: none;
+  }
+  .tool-card.done .tool-body, .tool-card.failed .tool-body { display: block; }
+  .tool-approval {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    border: 1px dashed rgba(255, 255, 255, 0.28);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: rgba(236, 234, 244, 0.9);
+  }
+  .tool-approval .mini-btn { flex: none; }
+  .tool-approval span { flex: 1; min-width: 140px; }
+  .tool-approval.decided { opacity: 0.6; }
+
   /* ---------- Markdown ---------- */
   .msg .txt.md { white-space: normal; }
   .msg .txt.md p { margin: 0 0 8px; }
@@ -3270,9 +3313,12 @@
     var dots = document.createElement('div');
     dots.className = 'msg-dots';
     dots.innerHTML = '<i></i><i></i><i></i>';
+    var toolsEl = document.createElement('div');
+    toolsEl.className = 'tool-cards';
     var txt = document.createElement('span');
     txt.className = 'txt md';
     el.appendChild(dots);
+    el.appendChild(toolsEl);
     el.appendChild(txt);
     var wrap = document.createElement('div');
     wrap.className = 'msg-row';
@@ -3292,8 +3338,103 @@
     currentBotMsg = {
       el: el, wrap: wrap, dots: dots, txt: txt, dotsGone: false,
       row: row, dot: dot, finalized: false, actions: null,
-      raw: '', think: null
+      raw: '', think: null, toolsEl: toolsEl
     };
+  }
+
+  function toolArgSummary(args) {
+    if (!args || typeof args !== 'object') return '';
+    var parts = [];
+    for (var k in args) {
+      if (!Object.prototype.hasOwnProperty.call(args, k)) continue;
+      var v = String(args[k]).replace(/\s+/g, ' ');
+      if (v.length > 42) v = v.slice(0, 42) + '…';
+      parts.push(k + ': ' + v);
+      if (parts.length >= 3) break;
+    }
+    return parts.join(' · ');
+  }
+
+  function appendToolCard(ev) {
+    if (!currentBotMsg) appendBotMsg();
+    var card = document.createElement('div');
+    card.className = 'tool-card running';
+    card.dataset.id = ev.id || '';
+    var head = document.createElement('div');
+    head.className = 'tool-head';
+    var mark = document.createElement('span');
+    mark.className = 'tool-mark';
+    var name = document.createElement('span');
+    name.className = 'tool-name';
+    name.textContent = ev.name || 'tool';
+    var argEl = document.createElement('span');
+    argEl.className = 'tool-args';
+    argEl.textContent = toolArgSummary(ev.args);
+    head.appendChild(mark);
+    head.appendChild(name);
+    head.appendChild(argEl);
+    var body = document.createElement('div');
+    body.className = 'tool-body';
+    card.appendChild(head);
+    card.appendChild(body);
+    currentBotMsg.toolsEl.appendChild(card);
+    tail.contentChanged();
+    dlog('tool call ' + (ev.name || ''));
+  }
+
+  function updateToolCard(ev) {
+    if (!currentBotMsg || !currentBotMsg.toolsEl) return;
+    var all = currentBotMsg.toolsEl.querySelectorAll('.tool-card');
+    var card = null;
+    for (var i = all.length - 1; i >= 0; i--) {
+      if (all[i].dataset.id === ev.id) { card = all[i]; break; }
+    }
+    if (!card) card = all[all.length - 1];
+    if (!card) return;
+    card.classList.remove('running');
+    card.classList.add(ev.ok === false ? 'failed' : 'done');
+    var body = card.querySelector('.tool-body');
+    if (body) {
+      var text = String(ev.text || '');
+      body.textContent = text.length > 300 ? text.slice(0, 300) + '…' : text;
+      body.title = text;
+    }
+    tail.contentChanged();
+  }
+
+  function showToolApproval(ev) {
+    if (!currentBotMsg) appendBotMsg();
+    var bar = document.createElement('div');
+    bar.className = 'tool-approval';
+    var label = document.createElement('span');
+    label.textContent = '需要你确认:' + (ev.name || '') + ' ' + toolArgSummary(ev.args);
+    var okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'mini-btn primary';
+    okBtn.textContent = '允许';
+    var noBtn = document.createElement('button');
+    noBtn.type = 'button';
+    noBtn.className = 'mini-btn';
+    noBtn.textContent = '拒绝';
+    function decide(allow) {
+      bar.classList.add('decided');
+      label.textContent = (allow ? '已允许:' : '已拒绝:') + (ev.name || '');
+      okBtn.disabled = true;
+      noBtn.disabled = true;
+      apiFetch('/api/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: ev.id, allow: allow })
+      }).catch(function () {});
+    }
+    okBtn.addEventListener('click', function () { decide(true); });
+    noBtn.addEventListener('click', function () { decide(false); });
+    bar.appendChild(label);
+    bar.appendChild(okBtn);
+    bar.appendChild(noBtn);
+    currentBotMsg.toolsEl.appendChild(bar);
+    tail.contentChanged();
+    setStatus('Qball 想执行一个操作,等你确认');
   }
 
   function appendBotDelta(text) {
@@ -3895,6 +4036,12 @@
           var clean = MiniMD.strip(s);
           if (clean.trim()) speakSentence(clean);
         });
+      } else if (ev.type === 'tool_call') {
+        appendToolCard(ev);
+      } else if (ev.type === 'tool_result') {
+        updateToolCard(ev);
+      } else if (ev.type === 'approval_required') {
+        showToolApproval(ev);
       } else if (ev.type === 'error') {
         streamError = ev.message || 'stream error';
         dlog('stream error: ' + streamError);

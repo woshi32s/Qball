@@ -39,6 +39,19 @@ RICH_REPLY = (
 
 REASONING = "让我想想怎么回答比较好…… 先抓住重点,再给出简短的回答。"
 
+# 工具调用脚本(测试用):触发词 → 工具名与参数
+TOOL_TRIGGERS = [
+    ("列一下工作区", "fs.list", {"path": "."}),
+    ("跑一条命令", "shell.run", {"command": "echo hi-from-shell"}),
+]
+
+
+def pick_scripted_tool(user_text):
+    for trigger, name, args in TOOL_TRIGGERS:
+        if trigger in user_text:
+            return name, args
+    return None, None
+
 
 def chunks(text, size):
     for i in range(0, len(text), size):
@@ -95,8 +108,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": {"message": "not found: " + path}})
             return
 
-        content = pick_reply(payload.get("messages"))
+        messages = payload.get("messages") or []
         model = str(payload.get("model") or "fake-model")
+        wants_tools = "tools" in payload
+
+        # 模拟"不支持 tools"的上游,触发服务端文本协议降级
+        if wants_tools and model == "fake-model-notools":
+            self._json(400, {"error": {"message": "tools are not supported by this model"}})
+            return
+
+        content = pick_reply(messages)
+        tool_name, tool_args = self._scripted_tool(messages)
+
+        if tool_name and wants_tools:
+            self._stream_tool_call(model, tool_name, tool_args)
+            return
+        if tool_name and not wants_tools:
+            content = json.dumps({
+                "emotionId": "30",
+                "reply": "我来看看…",
+                "action": {"tool": tool_name, "args": tool_args},
+            }, ensure_ascii=False)
 
         if not payload.get("stream"):
             self._json(200, {
@@ -111,6 +143,27 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        self._stream_text(model, content)
+
+    @staticmethod
+    def _scripted_tool(messages):
+        last_user = ""
+        saw_tool_result = False
+        for m in messages or []:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            if role == "user":
+                last_user = str(m.get("content") or "")
+                if last_user.startswith("[工具结果"):
+                    saw_tool_result = True
+            elif role == "tool":
+                saw_tool_result = True
+        if saw_tool_result:
+            return None, None
+        return pick_scripted_tool(last_user)
+
+    def _begin_stream(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -118,9 +171,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        def sse(obj):
-            self.wfile.write(("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8"))
+    def _sse(self, obj):
+        self.wfile.write(("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8"))
+        self.wfile.flush()
+
+    def _stream_tool_call(self, model, name, args):
+        self._begin_stream()
+        try:
+            self._sse({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
+                       "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{
+                           "index": 0, "id": "call_kit_1", "type": "function",
+                           "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+                       }]}}]})
+            self._sse({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
+                       "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _stream_text(self, model, content):
+        self._begin_stream()
 
         def delta_piece(text):
             return {"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
@@ -128,13 +199,13 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             for piece in chunks(REASONING, 10):
-                sse(delta_piece({"reasoning_content": piece}))
+                self._sse(delta_piece({"reasoning_content": piece}))
                 time.sleep(0.01)
             for piece in chunks(content, 6):
-                sse(delta_piece({"content": piece}))
+                self._sse(delta_piece({"content": piece}))
                 time.sleep(0.01)
-            sse({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+            self._sse({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "model": model,
+                       "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):

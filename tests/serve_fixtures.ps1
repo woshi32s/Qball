@@ -16,18 +16,25 @@ $Runtime = Join-Path $TestsDir ".runtime"
 $PidFile = Join-Path $Runtime "pids.json"
 $Kit = Join-Path $TestsDir "fixtures\fake_openai_kit.py"
 
+function Stop-Tree($procId) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { $null = & taskkill /pid $procId /T /F 2>&1 } catch {}
+  finally { $ErrorActionPreference = $prev }
+}
+
 function Stop-Fixtures {
   if (Test-Path $PidFile) {
     $pids = Get-Content $PidFile -Raw | ConvertFrom-Json
     foreach ($p in $pids) {
-      $null = taskkill /pid $p /T /F 2>&1
+      Stop-Tree $p
     }
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
   }
   # 兜底:按命令行特征清理(整套设备树 + 假模型服务)
   Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and ($_.CommandLine -match "fake_openai_kit\.py" -or $_.CommandLine -match "server\.py --no-browser") } |
-    ForEach-Object { $null = taskkill /pid $_.ProcessId /T /F 2>&1 }
+    ForEach-Object { Stop-Tree $_.ProcessId }
   Write-Host "[fixtures] stopped"
 }
 
@@ -39,6 +46,7 @@ New-Item -ItemType Directory -Path "$Runtime\app" -Force | Out-Null
 
 $app = Join-Path $Runtime "app"
 Copy-Item (Join-Path $AppRoot "server.py") $app -Force
+Copy-Item (Join-Path $AppRoot "qball_tools.py") $app -Force
 Copy-Item (Join-Path $AppRoot "qball.html") $app -Force
 Copy-Item (Join-Path $AppRoot "sw.js") $app -Force
 Copy-Item (Join-Path $AppRoot "manifest.webmanifest") $app -Force

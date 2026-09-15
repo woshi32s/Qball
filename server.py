@@ -26,11 +26,14 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from collections import deque
 from datetime import date
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+import qball_tools
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 from urllib.request import Request, urlopen
@@ -84,6 +87,7 @@ DEFAULTS = {
     "robot": True,
     "temperature": 0.8,
     "timeout": 90,
+    "tools_enabled": True,
 }
 
 EMOTIONS = [
@@ -150,6 +154,33 @@ def ensure_state():
 
 
 ensure_state()
+qball_tools.configure(STATE)
+
+MAX_TOOL_ROUNDS = 8
+_PENDING_APPROVALS = {}
+_APPROVAL_LOCK = threading.Lock()
+
+
+def _sse(obj):
+    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+
+
+def _wait_approval(approval_id, timeout=180):
+    entry = {"event": threading.Event(), "allow": False}
+    with _APPROVAL_LOCK:
+        _PENDING_APPROVALS[approval_id] = entry
+    try:
+        entry["event"].wait(timeout)
+        return bool(entry["allow"])
+    finally:
+        with _APPROVAL_LOCK:
+            _PENDING_APPROVALS.pop(approval_id, None)
+
+
+def _tools_unsupported(message):
+    low = (message or "").lower()
+    return ("tool" in low or "function" in low) and any(
+        code in low for code in ("400", "404", "422", "invalid", "unsupported", "unknown"))
 
 
 def _env_flag(name, default=True):
@@ -224,6 +255,8 @@ def update_config(payload):
         if len(model) > 128:
             raise ValueError("模型名过长")
         CONFIG["model"] = model
+    if payload.get("tools_enabled") is not None:
+        CONFIG["tools_enabled"] = bool(payload.get("tools_enabled"))
     if not save_config():
         raise RuntimeError("写入 config.json 失败(容器部署请改用环境变量)")
     return CONFIG
@@ -261,18 +294,25 @@ def parse_reply(content):
     if isinstance(obj, dict):
         eid = str(obj.get("emotionId") or obj.get("emotion_id") or "").strip()
         reply = str(obj.get("reply") or obj.get("text") or "").strip()
+        action = obj.get("action")
+        if not isinstance(action, dict) or not action.get("tool"):
+            action = None
     else:
         eid, reply = "", text
+        action = None
     if eid not in EMOTION_IDS:
         eid = "02"
     if not reply:
         reply = "嗯……我刚刚一时不知道说什么好。"
         eid = "20"
-    return eid, reply
+    return eid, reply, action
 
 
-def build_messages(message, history):
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+def build_messages(message, history, tools_hint=None):
+    system = SYSTEM_PROMPT
+    if tools_hint:
+        system = system + "\n\n" + tools_hint
+    messages = [{"role": "system", "content": system}]
     items = []
     for item in (history or []):
         if not isinstance(item, dict):
@@ -347,19 +387,23 @@ class ReplyExtractor:
         return "".join(pieces)
 
 
-def open_chat_stream(message, history, api_base=None, api_key=None, api_model=None):
+def open_chat_stream(messages, api_base=None, api_key=None, api_model=None, tools=None):
     key = (api_key or CONFIG["api_key"] or "").strip()
     base = (api_base or CONFIG["api_base"]).rstrip("/")
     model = (api_model or CONFIG["model"]).strip()
     if not key:
         raise RuntimeError("no API key: 请在配置页填写你的 API Key(或由站点管理员配置内置 Key)")
 
-    body = json.dumps({
+    payload = {
         "model": model,
-        "messages": build_messages(message, history),
+        "messages": messages,
         "temperature": CONFIG["temperature"],
         "stream": True,
-    }).encode("utf-8")
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    body = json.dumps(payload).encode("utf-8")
 
     req = Request(
         base + "/chat/completions",
@@ -411,7 +455,8 @@ def chat_completion(message, history, api_base=None, api_key=None, api_model=Non
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("unexpected LLM response: %s" % json.dumps(data)[:300])
-    return parse_reply(content)
+    eid, reply, _action = parse_reply(content)
+    return eid, reply
 
 
 def fetch_model_list(api_base, api_key):
@@ -795,6 +840,47 @@ def api_chat():
     return jsonify({"emotionId": eid, "reply": reply})
 
 
+@app.get("/api/tools")
+def api_tools():
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    return jsonify({
+        "enabled": bool(CONFIG.get("tools_enabled", True)),
+        "workspace": str(qball_tools.workspace()),
+        "tools": qball_tools.all_specs(),
+    })
+
+
+@app.post("/api/tools/run")
+def api_tools_run():
+    if not is_admin():
+        return api_error(403, "仅本机可运行")
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    if not name:
+        return api_error(400, "name is empty")
+    if qball_tools.needs_approval(name):
+        return api_error(403, "该工具需要用户批准,请在对话中触发")
+    ok, text = qball_tools.run(name, args)
+    return jsonify({"ok": ok, "text": text[:4000]})
+
+
+@app.post("/api/approve")
+def api_approve():
+    if not is_admin():
+        return api_error(403, "仅本机可操作")
+    payload = request.get_json(silent=True) or {}
+    approval_id = str(payload.get("id") or "")
+    with _APPROVAL_LOCK:
+        entry = _PENDING_APPROVALS.get(approval_id)
+    if not entry:
+        return api_error(404, "审批请求不存在或已过期")
+    entry["allow"] = bool(payload.get("allow"))
+    entry["event"].set()
+    return jsonify({"ok": True})
+
+
 @app.post("/api/chat_stream")
 def api_chat_stream():
     base, key, model = request_api_creds()
@@ -809,94 +895,181 @@ def api_chat_stream():
     if not message:
         return api_error(400, "message is empty")
     history = payload.get("history")
+    use_tools = bool(CONFIG.get("tools_enabled", True)) and not payload.get("no_tools")
 
     def generate():
-        try:
-            upstream = open_chat_stream(message[:MAX_MESSAGE_CHARS], history,
-                                        base or None, key or None, model or None)
-        except Exception as exc:
-            log.warning("stream open failed: %s", exc)
-            yield "data: " + json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n\n"
-            return
+        native = use_tools
+        text_hint = qball_tools.prompt_section() if use_tools else None
+        messages = build_messages(message[:MAX_MESSAGE_CHARS], history,
+                                  tools_hint=None if native else text_hint)
+        rounds = 0
 
-        extractor = ReplyExtractor()
-        raw_all = []
-        pending_text = []
-        sent_emotion = False
-
-        def sse(obj):
-            return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
-
-        def emit_emotion(eid):
-            nonlocal sent_emotion
-            if sent_emotion:
-                return ""
-            sent_emotion = True
-            out = sse({"type": "emotion", "id": eid if eid in EMOTION_IDS else "02"})
-            if pending_text:
-                out += sse({"type": "text", "delta": "".join(pending_text)})
-                pending_text.clear()
-            return out
-
-        try:
-            for raw_line in upstream:
-                line = raw_line.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
+        while rounds < MAX_TOOL_ROUNDS:
+            rounds += 1
+            tool_defs = qball_tools.all_specs() if (use_tools and native) else None
+            try:
+                upstream = open_chat_stream(messages, base or None, key or None, model or None,
+                                            tools=tool_defs)
+            except Exception as exc:
+                err = str(exc)
+                if tool_defs and _tools_unsupported(err):
+                    native = False
+                    messages = build_messages(message[:MAX_MESSAGE_CHARS], history, tools_hint=text_hint)
                     continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
+                log.warning("stream open failed: %s", exc)
+                yield _sse({"type": "error", "message": err})
+                return
+
+            extractor = ReplyExtractor()
+            raw_all = []
+            pending_text = []
+            sent_emotion = False
+            tool_calls = {}
+
+            def emit_emotion(eid):
+                nonlocal sent_emotion
+                if sent_emotion:
+                    return ""
+                sent_emotion = True
+                out = _sse({"type": "emotion", "id": eid if eid in EMOTION_IDS else "02"})
+                if pending_text:
+                    out += _sse({"type": "text", "delta": "".join(pending_text)})
+                    pending_text.clear()
+                return out
+
+            try:
+                for raw_line in upstream:
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except ValueError:
+                        continue
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    think = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    if think:
+                        yield _sse({"type": "thinking", "delta": think})
+                    for tc in delta.get("tool_calls") or []:
+                        if not isinstance(tc, dict):
+                            continue
+                        index = tc.get("index", 0)
+                        entry = tool_calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        if tc.get("id"):
+                            entry["id"] = str(tc["id"])
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            entry["name"] = str(fn["name"])
+                        if fn.get("arguments"):
+                            entry["arguments"] += str(fn["arguments"])
+                    text = delta.get("content") or ""
+                    if not text:
+                        continue
+                    raw_all.append(text)
+                    piece = extractor.feed(text)
+                    if extractor.eid and not sent_emotion:
+                        out = emit_emotion(extractor.eid)
+                        if out:
+                            yield out
+                    if piece:
+                        if sent_emotion:
+                            yield _sse({"type": "text", "delta": piece})
+                        else:
+                            pending_text.append(piece)
+            except (BrokenPipeError, ConnectionResetError, GeneratorExit):
+                return
+            except Exception as exc:
+                log.warning("stream error: %s", exc)
+                yield _sse({"type": "error", "message": str(exc)})
+                return
+            finally:
                 try:
-                    obj = json.loads(data)
-                except ValueError:
-                    continue
-                choices = obj.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                think = delta.get("reasoning_content") or delta.get("reasoning") or ""
-                if think:
-                    yield sse({"type": "thinking", "delta": think})
-                text = delta.get("content") or ""
-                if not text:
-                    continue
-                raw_all.append(text)
-                piece = extractor.feed(text)
-                if extractor.eid and not sent_emotion:
-                    out = emit_emotion(extractor.eid)
+                    upstream.close()
+                except Exception:
+                    pass
+
+            raw_text = "".join(raw_all)
+            eid, reply, action = "", "", None
+            if raw_text.strip():
+                eid, reply, action = parse_reply(raw_text)
+            if extractor.pos is None:
+                if eid or reply:
+                    out = emit_emotion(eid or "30")
                     if out:
                         yield out
-                if piece:
-                    if sent_emotion:
-                        yield sse({"type": "text", "delta": piece})
-                    else:
-                        pending_text.append(piece)
-
-            if extractor.pos is None:
-                eid, reply = parse_reply("".join(raw_all))
-                out = emit_emotion(eid)
-                if out:
-                    yield out
-                if reply:
-                    yield sse({"type": "text", "delta": reply})
+                    if reply:
+                        yield _sse({"type": "text", "delta": reply})
             elif not sent_emotion:
                 out = emit_emotion(extractor.eid or "02")
                 if out:
                     yield out
-            yield sse({"type": "done"})
-        except (BrokenPipeError, ConnectionResetError, GeneratorExit):
-            pass
-        except Exception as exc:
-            log.warning("stream error: %s", exc)
-            try:
-                yield sse({"type": "error", "message": str(exc)})
-            except Exception:
-                pass
-        finally:
-            try:
-                upstream.close()
-            except Exception:
-                pass
+
+            calls = []
+            if use_tools:
+                if tool_calls:
+                    for index in sorted(tool_calls):
+                        entry = tool_calls[index]
+                        if not entry["name"]:
+                            continue
+                        try:
+                            args = json.loads(entry["arguments"]) if entry["arguments"].strip() else {}
+                        except ValueError:
+                            args = {}
+                        if not isinstance(args, dict):
+                            args = {}
+                        calls.append({"id": entry["id"] or ("call_%d" % index),
+                                      "name": entry["name"], "args": args})
+                elif action:
+                    args = action.get("args") if isinstance(action.get("args"), dict) else {}
+                    calls.append({"id": "text_%d" % rounds, "name": str(action.get("tool")), "args": args})
+
+            if not calls:
+                yield _sse({"type": "done"})
+                return
+
+            results = []
+            for call in calls:
+                yield _sse({"type": "tool_call", "id": call["id"], "name": call["name"], "args": call["args"]})
+                if qball_tools.needs_approval(call["name"]):
+                    approval_id = uuid.uuid4().hex[:12]
+                    yield _sse({"type": "approval_required", "id": approval_id,
+                                "name": call["name"], "args": call["args"]})
+                    allowed = _wait_approval(approval_id)
+                    if allowed:
+                        ok, text = qball_tools.run(call["name"], call["args"])
+                    else:
+                        ok, text = False, "用户拒绝了这次操作"
+                else:
+                    ok, text = qball_tools.run(call["name"], call["args"])
+                yield _sse({"type": "tool_result", "id": call["id"], "name": call["name"],
+                            "ok": ok, "text": text[:4000]})
+                results.append((call, text))
+
+            if native:
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call["id"], "type": "function",
+                        "function": {"name": call["name"],
+                                     "arguments": json.dumps(call["args"], ensure_ascii=False)},
+                    } for call, _text in results],
+                })
+                for call, text in results:
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": text[:8000]})
+            else:
+                messages.append({"role": "assistant", "content": raw_text[:4000]})
+                for call, text in results:
+                    messages.append({"role": "user",
+                                     "content": "[工具结果 %s]\n%s" % (call["name"], text[:8000])})
+
+        yield _sse({"type": "error", "message": "工具调用次数到达上限,先停一下"})
 
     return Response(
         generate(),
