@@ -50,6 +50,9 @@ CONFIG_DEFAULTS = {
     ],
     "scaffold_paths": ["agent/"],
     "app_dir": "",
+    "consolidate_addendum_chars": 1500,   # 附加指令超过此长度触发知识合并
+    "consolidate_skills": 8,              # 技能超过此数量触发知识合并
+    "retire_after_fails": 5,              # 卡题连败次数上限(达到则退休)
 }
 
 META_SYSTEM = (
@@ -107,6 +110,9 @@ def log(msg):
     print(line, flush=True)
     if _LOG_FILE:
         try:
+            path = Path(_LOG_FILE)
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.replace(path.with_suffix(".log.old"))
             with open(_LOG_FILE, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
         except OSError:
@@ -499,6 +505,18 @@ TASK_GEN_PROMPT = (
     "约束:验收必须能在工作区内自动判定;不要涉及删除文件、下载大文件、系统级操作;prompt 不超过 300 字。"
 )
 
+CONSOLIDATE_PROMPT = (
+    "【合并】你是 Qball 进化系统的知识管理员。当前积累如下:\n"
+    "=== 附加指令(addendum) ===\n%s\n"
+    "=== 技能库 ===\n%s\n"
+    "请做一次知识整理:合并重复、删除冗余、保留所有真正有用的经验教训,并保持表述精炼。只输出 JSON:\n"
+    '{"addendum": "<整理后的完整附加指令内容>", '
+    '"skills": {"<技能文件名如 xxx.md>": "<该技能整理后的完整内容>"}, '
+    '"summary": "<一句话说明这次整理做了什么>"}\n'
+    "约束:addendum 不超过 1200 字;技能总数不超过 8 个(其余会被删除,请把它们的要点并入保留的);"
+    "每个技能不超过 2500 字;不要丢失仍然有效的具体操作纪律(如:用 fs.write 落盘、先写后跑、单次验证等)。"
+)
+
 
 def validate_new_task(obj, existing_titles):
     if not isinstance(obj, dict):
@@ -528,6 +546,8 @@ def validate_new_task(obj, existing_titles):
             command = str(v.get("command") or "").strip()[:300]
             if not command:
                 return None, "shell 验收不合法"
+            if IS_WINDOWS:
+                command = re.sub(r"\bpython3(\.\d+)?\b", "python", command)  # Windows 下统一 python
             task["kind"] = "verify"
             task["verify"] = {"type": "shell", "command": command,
                               "expect_contains": str(v.get("expect_contains") or "")[:200]}
@@ -574,6 +594,73 @@ def _snapshot_repo(repo):
             _run(["git", "-C", str(repo), "commit", "-q", "-m", "evo: snapshot before revert"])
     except Exception:  # noqa: BLE001
         pass
+
+
+def needs_consolidation(cfg, p):
+    add = p["agent"] / "system_prompt_addendum.md"
+    size = 0
+    if add.exists():
+        try:
+            size = len(add.read_text(encoding="utf-8"))
+        except OSError:
+            size = 0
+    skills = list((p["agent"] / "skills").glob("*.md"))
+    return size > int(cfg.get("consolidate_addendum_chars", 1500)) or len(skills) > int(cfg.get("consolidate_skills", 8))
+
+
+def consolidate(state_dir, cfg, server, p):
+    """知识合并(维护代):整理附加指令与技能库,同步删除冗余,提交进化仓库。"""
+    add_path = p["agent"] / "system_prompt_addendum.md"
+    addendum = ""
+    if add_path.exists():
+        try:
+            addendum = add_path.read_text(encoding="utf-8")
+        except OSError:
+            addendum = ""
+    skills = {}
+    for f in sorted((p["agent"] / "skills").glob("*.md")):
+        try:
+            skills[f.name] = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    menu = "\n\n".join("### %s\n%s" % (name, content[:1500]) for name, content in skills.items()) or "(空)"
+    try:
+        data = server.chat(CONSOLIDATE_PROMPT % (addendum[:3000], menu), cfg["executor_model"], system=META_SYSTEM)
+        reply = str(data.get("reply") or "")
+        m = re.search(r"\{[\s\S]*\}", reply)
+        obj = json.loads(m.group(0)) if m else {}
+    except Exception as exc:  # noqa: BLE001
+        return "合并调用失败: %s" % exc
+    new_addendum = str(obj.get("addendum") or "").strip()
+    if not new_addendum or len(new_addendum) > 2000:
+        return "合并结果无效(addendum 为空或过长)"
+    raw_skills = obj.get("skills") if isinstance(obj.get("skills"), dict) else {}
+    clean_skills = {}
+    for name, content in list(raw_skills.items())[:8]:
+        n = re.sub(r"[^0-9A-Za-z._-]", "", str(name))
+        if not n.endswith(".md"):
+            n += ".md"
+        if isinstance(content, str) and content.strip() and len(content) <= 3000:
+            clean_skills[n] = content.strip() + "\n"
+    # 应用:重写附加指令;技能库与结果同步(未列出的删除)
+    add_path.write_text(new_addendum + "\n", encoding="utf-8")
+    skills_dir = p["agent"] / "skills"
+    existing = [f.name for f in skills_dir.glob("*.md")]
+    for f in skills_dir.glob("*.md"):
+        if f.name not in clean_skills:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    for name, content in clean_skills.items():
+        (skills_dir / name).write_text(content, encoding="utf-8")
+    try:
+        git_commit(p["root"], "evo(maintenance): consolidate knowledge (%d->%d skills)" % (len(existing), len(clean_skills)))
+    except Exception as exc:  # noqa: BLE001
+        log("consolidate commit failed: %s" % exc)
+    summary = str(obj.get("summary") or "知识合并完成")[:150]
+    return "addendum %d->%d 字 / 技能 %d->%d 个 · %s" % (
+        len(addendum), len(new_addendum), len(existing), len(clean_skills), summary)
 
 
 def revert_last(state_dir, cfg=None):
@@ -752,6 +839,24 @@ def run_generation(state_dir, cfg=None, server=None):
         append_jsonl(p["usage"], {"when": now(), "gen": gen, "phase": phase, "model": model,
                                   "est_tokens": max(1, len(text or "") // 3)})
 
+    # 知识库维护代:附加指令过长或技能过多时,本代专门做知识合并
+    try:
+        if needs_consolidation(cfg, p):
+            summary = consolidate(state_dir, cfg, server, p)
+            result["consolidate"] = summary
+            step("consolidate", summary)
+            append_jsonl(p["scores"], {
+                "gen": gen, "when": now(), "task": "maintenance", "title": "知识库合并",
+                "kind": "maintenance", "score": 1.0, "reason": summary[:120], "adopted": True,
+            })
+            st["last_score"] = 1.0
+            st["updated"] = now()
+            save_state(state_dir, st)
+            _write_json(gen_dir / "result.json", result)
+            return result
+    except Exception as exc:  # noqa: BLE001
+        step("consolidate", "失败: %s" % str(exc)[:120])
+
     task = pick_task(state_dir)
     # 派活:弱项不足或每 3 代,让模型出一个新任务
     try:
@@ -797,10 +902,21 @@ def run_generation(state_dir, cfg=None, server=None):
     result["reason"] = reason
     step("score", "%.2f %s" % (score, reason))
 
-    # 卡题追踪:连续低分 3 次的任务会被暂时跳过
+    # 卡题追踪:连续低分达到上限的任务退休(不再参与轮换)
     fails_map = st.setdefault("task_fails", {})
     if score < 0.5:
         fails_map[task["id"]] = int(fails_map.get(task["id"], 0)) + 1
+        if int(fails_map[task["id"]]) >= int(cfg.get("retire_after_fails", 5)):
+            try:
+                retired_dir = p["root"] / "bench" / "retired"
+                retired_dir.mkdir(parents=True, exist_ok=True)
+                src = p["tasks"] / ("%s.json" % task["id"])
+                if src.exists():
+                    src.replace(retired_dir / src.name)
+                fails_map.pop(task["id"], None)
+                step("retire-task", task["id"])
+            except OSError as exc:
+                log("retire failed: %s" % exc)
     else:
         fails_map.pop(task["id"], None)
 
@@ -815,7 +931,7 @@ def run_generation(state_dir, cfg=None, server=None):
     result["proposal_summary"] = proposal.get("summary") or proposal.get("error") or ""
     track("propose", cfg["executor_model"], result["proposal_summary"])
     _write_json(gen_dir / "proposal.json", proposal)
-    step("propose", result["proposal_summary"][:80])
+    step("propose", result["proposal_summary"][:80] or "无有效提案")
 
     changed = []
     if proposal.get("scaffold") and score < 0.5:
@@ -855,7 +971,7 @@ def run_generation(state_dir, cfg=None, server=None):
                 git_restore(Path(cfg["_app_dir"]), [f for f in changed if not f.startswith("agent/")])
                 step("rollback", "测试门未通过,已回滚")
     else:
-        step("propose", "无提案")
+        pass
 
     append_jsonl(p["scores"], {
         "gen": gen, "when": now(), "task": task["id"], "title": task.get("title"),

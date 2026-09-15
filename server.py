@@ -1074,7 +1074,7 @@ def api_evolution_control():
         if action == "run_once_direct":
             result = evolution_engine.run_generation(STATE)
             return jsonify({"ok": True, "result": {
-                k: result.get(k) for k in ("gen", "score", "shadow", "proposal_summary", "reflection", "error")}})
+                k: result.get(k) for k in ("gen", "score", "shadow", "proposal_summary", "reflection", "consolidate", "error")}})
         if action == "set_models":
             for key in ("executor_model", "judge_model"):
                 value = str(payload.get(key) or "").strip()

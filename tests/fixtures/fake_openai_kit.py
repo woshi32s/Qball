@@ -92,6 +92,12 @@ def evolution_reply(user):
             "kind": "verify",
             "verify": {"type": "file_contains", "path": "todo.md", "text": "3."},
         }, ensure_ascii=False)
+    if "【合并】" in user:
+        return json.dumps({
+            "addendum": "# 附加指令\n\n## 核心纪律(合并版)\n- 交付优先:直接产出文件,不把决策抛回用户。\n- 先写后跑:用 fs.write 落盘,再运行一次验证。\n",
+            "skills": {"combined-discipline.md": "# 合并技能:交付与验证纪律\n按纪律执行任务:先写后跑,单次验证。"},
+            "summary": "把多条规则合并为 1 条纪律与 1 个技能",
+        }, ensure_ascii=False)
     if "【提案】" in user:
         return proposal_reply()
     if "【代码提案】" in user:
@@ -190,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
         for m in messages:
             if isinstance(m, dict) and m.get("role") == "user":
                 last_user = str(m.get("content") or "")
-        is_meta = any(mk in last_user for mk in ("【评审】", "【反思】", "【提案】", "【出题】", "【代码提案】"))
+        is_meta = any(mk in last_user for mk in ("【评审】", "【反思】", "【提案】", "【出题】", "【代码提案】", "【合并】"))
 
         # 模拟"不支持 tools"的上游,触发服务端文本协议降级
         if wants_tools and model == "fake-model-notools":

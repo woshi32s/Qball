@@ -111,9 +111,26 @@ function writeCfg(cfg) {
   const rv3 = await control('revert');
   log(rv3.status === 400, 'nothing left to revert -> 400');
 
+  /* ---------- 知识合并(维护代):长附加指令 + 多个技能 → 自动合并 ---------- */
+  fs.mkdirSync(path.join(EVO, 'agent', 'skills'), { recursive: true });
+  fs.writeFileSync(path.join(EVO, 'agent', 'skills', 'tmp-a.md'), '# A\n旧技能一\n');
+  fs.writeFileSync(path.join(EVO, 'agent', 'skills', 'tmp-b.md'), '# B\n旧技能二\n');
+  fs.writeFileSync(path.join(EVO, 'agent', 'system_prompt_addendum.md'), 'X'.repeat(2000));
+  const r4 = await control('run_once_direct');
+  const res4 = r4.d && r4.d.result;
+  log(res4 && res4.gen === 4 && typeof res4.consolidate === 'string', 'consolidation generation runs',
+    res4 && (res4.consolidate || '').slice(0, 60));
+  const gen4res = JSON.parse(fs.readFileSync(path.join(EVO, 'outcomes', 'gen-0004', 'result.json'), 'utf8'));
+  log(gen4res.steps.some((s) => s.name === 'consolidate'), 'consolidate step recorded');
+  const addendum4 = fs.readFileSync(path.join(EVO, 'agent', 'system_prompt_addendum.md'), 'utf8');
+  log(addendum4.length < 1500 && addendum4.indexOf('核心纪律') >= 0, 'addendum consolidated (<1500 chars)', addendum4.length);
+  const skills4 = fs.readdirSync(path.join(EVO, 'agent', 'skills'));
+  log(skills4.length === 1 && skills4[0] === 'combined-discipline.md', 'skills merged to one file', skills4.join(','));
+  log(/consolidate knowledge/.test(gitLog(EVO)), 'consolidation committed in evolution repo');
+
   /* ---------- 状态与控制接口 ---------- */
   const st = await j(A + '/api/evolution/status');
-  log(st.d && st.d.generation === 3 && st.d.recent.length === 3,
+  log(st.d && st.d.generation === 4 && st.d.recent.length >= 4,
     'status: generation + recent scores', JSON.stringify({ gen: st.d.generation, recent: st.d.recent.length }));
   log(st.d && st.d.source_mode === true, 'status: source mode detected');
   log(st.d && st.d.executor_model === 'fake-model-alpha', 'status: models from config', st.d.executor_model);
