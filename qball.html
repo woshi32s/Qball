@@ -1537,10 +1537,12 @@
       <div class="setting-row" id="evo-actions" style="display:none">
         <div>
           <div class="st-desc" id="evo-recent"></div>
+          <div class="st-desc" id="evo-adopted"></div>
         </div>
         <div class="evo-btns">
           <button class="mini-btn" id="evo-pause" type="button">暂停</button>
           <button class="mini-btn" id="evo-once" type="button">跑一代</button>
+          <button class="mini-btn" id="evo-revert" type="button">回滚上次</button>
         </div>
       </div>
     </div>
@@ -3527,8 +3529,10 @@
   var evoInput = document.getElementById('set-evo');
   var evoActions = document.getElementById('evo-actions');
   var evoRecent = document.getElementById('evo-recent');
+  var evoAdopted = document.getElementById('evo-adopted');
   var evoPauseBtn = document.getElementById('evo-pause');
   var evoOnceBtn = document.getElementById('evo-once');
+  var evoRevertBtn = document.getElementById('evo-revert');
 
   function evoControl(action) {
     return apiFetch('/api/evolution/control', {
@@ -3544,8 +3548,9 @@
       ' · 第 ' + (st.generation || 0) + ' 代';
     if (st.paused) line += ' · 已暂停';
     if (st.executor_model) line += ' · 模型 ' + st.executor_model;
+    if (st.shadow_remaining !== undefined && st.shadow_remaining > 0) line += ' · 影子剩余 ' + st.shadow_remaining + ' 代';
     if (st.last_score !== null && st.last_score !== undefined) line += ' · 最近得分 ' + st.last_score;
-    if (st.last_error) line += ' · 上次错误: ' + st.last_error;
+    if (st.last_error) line += ' · ' + st.last_error;
     evoStatusEl.textContent = line;
     evoInput.checked = !!st.enabled;
     evoActions.style.display = st.enabled ? '' : 'none';
@@ -3554,6 +3559,12 @@
       return '#' + r.gen + ' ' + (r.title || r.task) + ' ' + r.score;
     }).join(' · ');
     evoRecent.textContent = recent ? ('最近: ' + recent) : '还没有进化记录';
+    if (evoAdopted) {
+      var last = (st.adopted || []).slice(-1)[0];
+      evoAdopted.textContent = last
+        ? ('上次采纳 #' + last.gen + ': ' + (last.summary || (last.changed || []).join(',')))
+        : '还没有采纳过改动';
+    }
   }
 
   function loadEvolutionPanel() {
@@ -3599,6 +3610,16 @@
     evoOnceBtn.addEventListener('click', function () {
       setStatus('已触发一代进化,稍后可在状态里查看');
       evoControl('run_once').then(function () {
+        setTimeout(loadEvolutionPanel, 800);
+      });
+    });
+  }
+  if (evoRevertBtn) {
+    evoRevertBtn.addEventListener('click', function () {
+      if (!window.confirm('回滚最近一次采纳的改动吗?(重启后生效)')) return;
+      evoControl('revert').then(function (d) {
+        if (d && d.error) { setStatus(d.error, true); }
+        else { setStatus((d && d.message) || '已回滚'); }
         setTimeout(loadEvolutionPanel, 800);
       });
     });

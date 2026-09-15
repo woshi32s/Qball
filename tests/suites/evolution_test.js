@@ -86,6 +86,26 @@ function writeCfg(cfg) {
   log(fs.existsSync(path.join(EVO, 'agent', 'skills', 'evo-demo.md')), 'gen3 skill file adopted');
   log(/evo\(gen 3\)/.test(gitLog(EVO)), 'gen3 committed in evolution repo');
 
+  /* ---------- 派活:第 3 代应生成一个新任务 ---------- */
+  const taskDir = path.join(EVO, 'bench', 'tasks');
+  const taskFiles = fs.readdirSync(taskDir);
+  const newTask = taskFiles
+    .map((f) => JSON.parse(fs.readFileSync(path.join(taskDir, f), 'utf8')))
+    .find((t) => t.created_by === 'agent');
+  log(taskFiles.length >= 5 && !!newTask && newTask.kind === 'verify' && !!newTask.verify,
+    'agent generated a new task', newTask && newTask.title);
+
+  /* ---------- 回滚:两次 revert 依次撤回采纳 ---------- */
+  const rv1 = await control('revert');
+  log(rv1.status === 200 && rv1.d && rv1.d.ok, 'revert #1 ok', rv1.d && rv1.d.message);
+  log(!fs.existsSync(path.join(EVO, 'agent', 'skills', 'evo-demo.md')), 'gen3 skill reverted');
+  const rv2 = await control('revert');
+  log(rv2.status === 200 && rv2.d && rv2.d.ok, 'revert #2 ok', rv2.d && rv2.d.message);
+  const readme2 = fs.readFileSync(path.join(APP_DIR, 'README.md'), 'utf8');
+  log(readme2.indexOf('evolved by qball') < 0, 'gen2 code change reverted');
+  const rv3 = await control('revert');
+  log(rv3.status === 400, 'nothing left to revert -> 400');
+
   /* ---------- 状态与控制接口 ---------- */
   const st = await j(A + '/api/evolution/status');
   log(st.d && st.d.generation === 3 && st.d.recent.length === 3,

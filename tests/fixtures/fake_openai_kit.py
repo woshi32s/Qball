@@ -81,6 +81,13 @@ def evolution_reply(user):
         return '{"score": 0.85, "reason": "工具使用顺畅,输出完整"}'
     if "【反思】" in user:
         return "这次任务完成得干净,但可以先规划再动手;下次直接复用已有目录结构,少走一步探索。"
+    if "【出题】" in user:
+        return json.dumps({
+            "title": "写一个待办清单",
+            "prompt": "在工作区创建 todo.md,写三行待办事项,最后一行以 3. 开头。完成后简短说明。",
+            "kind": "verify",
+            "verify": {"type": "file_contains", "path": "todo.md", "text": "3."},
+        }, ensure_ascii=False)
     if "【提案】" in user:
         return proposal_reply()
     if "【代码提案】" in user:
@@ -174,13 +181,20 @@ class Handler(BaseHTTPRequestHandler):
         model = str(payload.get("model") or "fake-model")
         wants_tools = "tools" in payload
 
+        # 元任务(评审/反思/提案/出题)走专用回复,不触发脚本化工具调用
+        last_user = ""
+        for m in messages:
+            if isinstance(m, dict) and m.get("role") == "user":
+                last_user = str(m.get("content") or "")
+        is_meta = any(mk in last_user for mk in ("【评审】", "【反思】", "【提案】", "【出题】", "【代码提案】"))
+
         # 模拟"不支持 tools"的上游,触发服务端文本协议降级
         if wants_tools and model == "fake-model-notools":
             self._json(400, {"error": {"message": "tools are not supported by this model"}})
             return
 
         content = pick_reply(messages)
-        tool_name, tool_args = self._scripted_tool(messages)
+        tool_name, tool_args = (None, None) if is_meta else self._scripted_tool(messages)
 
         if tool_name and wants_tools:
             self._stream_tool_call(model, tool_name, tool_args)

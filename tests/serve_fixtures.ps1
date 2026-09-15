@@ -78,7 +78,7 @@ function Start-Hidden($cmdline) {
 $pids = @()
 
 # 1) 假模型服务
-$kitCmd = "cmd /c cd /d `"$app`" && python `"$Kit`" > `"$app\kit.log`" 2>&1"
+$kitCmd = "cmd /c cd /d `"$app`" && python `"$Kit`" > `"$Runtime\kit.log`" 2>&1"
 Write-Host "[fixtures] kit cmd: $kitCmd"
 $kitPid = Start-Hidden $kitCmd
 Write-Host "[fixtures] kit pid: $kitPid"

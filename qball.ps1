@@ -403,9 +403,9 @@ function Invoke-Evolve {
     if ($st.last_error) { Write-Tip ("上次错误: " + $st.last_error) }
     return
   }
-  $map = @{ start = "enable"; stop = "disable"; pause = "pause"; resume = "resume"; once = "run_once" }
+  $map = @{ start = "enable"; stop = "disable"; pause = "pause"; resume = "resume"; once = "run_once"; revert = "revert" }
   $act = $map[($Action + '').ToLower()]
-  if (-not $act) { Write-Tip "用法: qball evolve status|start|stop|pause|resume|once"; return }
+  if (-not $act) { Write-Tip "用法: qball evolve status|start|stop|pause|resume|once|revert"; return }
   try {
     $null = Invoke-RestMethod "$base/api/evolution/control" -Method Post -ContentType "application/json" -Body (@{ action = $act } | ConvertTo-Json -Compress) -TimeoutSec 80
     Write-Ok ("已执行: " + $Action)
@@ -452,7 +452,7 @@ Qball 命令行工具
   qball update                   检查并更新(源码模式下 git pull)
   qball dev-setup [-From 路径]   开启源码模式(自进化前提;默认从 GitHub 克隆)
   qball devmode on|off           查看/关闭源码模式
-  qball evolve [子命令]          自我进化:status|start|stop|pause|resume|once
+  qball evolve [子命令]          自我进化:status|start|stop|pause|resume|once|revert
   qball uninstall [-Purge]       卸载(-Purge 同时删除配置与数据)
 "@
 }

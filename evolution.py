@@ -219,8 +219,14 @@ def init_workspace(state_dir):
         for task in SEED_TASKS:
             save_task(state_dir, task)
 
-    # agent 产物自身的版本库
+    # agent 产物自身的版本库(只版本化 agent/,状态文件不进库,避免回滚冲突)
     if not (p["root"] / ".git").exists():
+        gitignore = p["root"] / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(
+                "scores.jsonl\nusage.jsonl\nstate.json\nconfig.json\n"
+                "daemon.log\ndaemon.pid\ncontrol/\noutcomes/\nlast-task-gen.json\n",
+                encoding="utf-8")
         try:
             _run(["git", "init", "-q"], cwd=p["root"])
             _run(["git", "-C", str(p["root"]), "config", "user.name", "Qball Evolution"])
@@ -452,6 +458,125 @@ CODE_PROPOSAL_PROMPT = (
     "要求:find 必须在文件中唯一出现且逐字符一致;改动不超过 %d 行;不要修改测试或安装脚本。"
 )
 
+TASK_GEN_PROMPT = (
+    "【出题】你是 Qball 进化系统的任务设计师。当前任务库:\n%s\n"
+    "请设计一个新任务,用来锻炼 Qball 的实用能力(文件整理 / 写小脚本 / 查资料并总结 / 写作 / 数据收拾等),"
+    "难度循序渐进、不要重复上面的任务。只输出 JSON:\n"
+    '{"title": "<短标题>", "prompt": "<给执行者的完整中文指令,具体、可独立完成>", '
+    '"kind": "verify" 或 "soft", '
+    '"verify": {"type": "file_contains", "path": "<工作区内文件>", "text": "<必须包含的文字>"} '
+    '或 {"type": "shell", "command": "<工作区内可运行的命令>", "expect_contains": "<输出中应出现的内容>"}, '
+    '"rubric": "<kind=soft 时的评分点>"}\n'
+    "约束:验收必须能在工作区内自动判定;不要涉及删除文件、下载大文件、系统级操作;prompt 不超过 300 字。"
+)
+
+
+def validate_new_task(obj, existing_titles):
+    if not isinstance(obj, dict):
+        return None, "非法 JSON"
+    title = str(obj.get("title") or "").strip()[:60]
+    prompt = str(obj.get("prompt") or "").strip()
+    kind = str(obj.get("kind") or "").strip()
+    if not title or not prompt or len(prompt) > 800:
+        return None, "标题或指令不合法"
+    if title in existing_titles:
+        return None, "任务重复"
+    task = {"title": title, "prompt": prompt, "priority": 40, "created_by": "agent"}
+    if kind == "soft":
+        task["kind"] = "soft"
+        task["rubric"] = str(obj.get("rubric") or "评分点:完成度、表达质量、效率。")[:500]
+    else:
+        v = obj.get("verify") or {}
+        vtype = str(v.get("type") or "")
+        if vtype == "file_contains":
+            path = str(v.get("path") or "").replace("\\", "/").lstrip("/")
+            text = str(v.get("text") or "")
+            if not path or ".." in path or not text or len(text) > 200:
+                return None, "file_contains 验收不合法"
+            task["kind"] = "verify"
+            task["verify"] = {"type": "file_contains", "path": path, "text": text}
+        elif vtype == "shell":
+            command = str(v.get("command") or "").strip()[:300]
+            if not command:
+                return None, "shell 验收不合法"
+            task["kind"] = "verify"
+            task["verify"] = {"type": "shell", "command": command,
+                              "expect_contains": str(v.get("expect_contains") or "")[:200]}
+        else:
+            return None, "未知验收类型"
+    return task, ""
+
+
+def generate_task(state_dir, cfg, server):
+    p = paths(state_dir)
+    tasks = bench_tasks(state_dir)
+    if len(tasks) >= 30:
+        return None, "任务库已满(30)"
+    menu = "\n".join("- %s:%s" % (t["title"], (t.get("prompt") or "")[:80]) for t in tasks[-10:]) or "(空)"
+    try:
+        data = server.chat(TASK_GEN_PROMPT % menu, cfg["executor_model"], system=META_SYSTEM)
+        reply = str(data.get("reply") or "")
+        m = re.search(r"\{[\s\S]*\}", reply)
+        obj = json.loads(m.group(0)) if m else None
+    except Exception as exc:  # noqa: BLE001
+        return None, "出题调用失败: %s" % exc
+    task, err = validate_new_task(obj, {t["title"] for t in tasks})
+    if not task:
+        try:
+            (p["outcomes"] / "last-task-gen.json").write_text(
+                json.dumps({"reply": reply[:800], "obj": obj}, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        return None, "出题校验失败: %s" % err
+    task["id"] = "gen-%s" % re.sub(r"[^0-9A-Za-z]+", "-", task["title"])[:24].strip("-").lower()
+    if not task["id"] or task["id"] == "gen-":
+        task["id"] = "gen-task-%d" % int(time.time())
+    task["created_at"] = now()
+    save_task(state_dir, task)
+    return task, ""
+
+
+def _snapshot_repo(repo):
+    """回滚前快照:把未提交的变动先提交,保证 git revert 有干净工作区。"""
+    try:
+        code, out = _run(["git", "-C", str(repo), "status", "--porcelain"])
+        if out.strip():
+            _run(["git", "-C", str(repo), "add", "-A"])
+            _run(["git", "-C", str(repo), "commit", "-q", "-m", "evo: snapshot before revert"])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def revert_last(state_dir, cfg=None):
+    """回滚最近一次采纳(应用仓库与进化仓库各自的提交)。"""
+    cfg = cfg or load_config(state_dir)
+    st = load_state(state_dir)
+    adopted = st.get("adopted") or []
+    if not adopted:
+        return False, "没有可回滚的改动"
+    last = adopted[-1]
+    evo_root = paths(state_dir)["root"]
+    app_root = Path(cfg.get("app_dir") or (Path(state_dir) / "app"))
+    done, failed = [], []
+    for repo_name, commit in last.get("commits", []):
+        repo = evo_root if repo_name == "evo" else app_root
+        _snapshot_repo(repo)
+        code, out = _run(["git", "-C", str(repo), "revert", "--no-edit", commit], timeout=60)
+        if code == 0:
+            done.append(repo_name)
+        else:
+            _run(["git", "-C", str(repo), "revert", "--abort"])
+            failed.append("%s(%s)" % (repo_name, out[-120:]))
+    if failed and not done:
+        return False, "回滚失败: " + "; ".join(failed)
+    st["adopted"] = adopted[:-1]
+    if "app" in done:
+        st["restart_needed"] = True
+    save_state(state_dir, st)
+    if failed:
+        return False, "部分回滚失败: " + "; ".join(failed)
+    return True, "已回滚第 %d 代采纳(%s),重启后生效" % (last.get("gen", 0), ",".join(done) or "无提交")
+
 
 def reflect(state_dir, cfg, server, task, transcript, score, reason):
     prompt = REFLECT_PROMPT % (
@@ -593,6 +718,22 @@ def run_generation(state_dir, cfg=None, server=None):
                                   "est_tokens": max(1, len(text or "") // 3)})
 
     task = pick_task(state_dir)
+    # 派活:弱项不足或每 3 代,让模型出一个新任务
+    try:
+        last_scores = {}
+        for line in read_jsonl(p["scores"])[-200:]:
+            last_scores[line.get("task")] = line.get("score", 0)
+        weak = sum(1 for t in bench_tasks(state_dir) if last_scores.get(t["id"], -1) < 0.6)
+        if weak < 2 or gen % 3 == 0:
+            new_task, terr = generate_task(state_dir, cfg, server)
+            if new_task:
+                step("generate-task", "%s:%s" % (new_task["id"], new_task["title"]))
+            elif terr:
+                step("generate-task", "跳过: %s" % terr)
+            task = pick_task(state_dir)
+    except Exception as exc:  # noqa: BLE001
+        step("generate-task", "异常: %s" % str(exc)[:80])
+
     if not task:
         result["error"] = "任务库为空"
         _write_json(gen_dir / "result.json", result)
@@ -656,7 +797,10 @@ def run_generation(state_dir, cfg=None, server=None):
                         commits.append(("app", git_commit(Path(cfg["_app_dir"]), "evo(gen %d): %s" % (gen, result["proposal_summary"][:60]))))
                     except Exception as exc:  # noqa: BLE001
                         step("commit-app-fail", str(exc)[:100])
-                st.setdefault("adopted", []).append({"gen": gen, "changed": changed, "commits": commits})
+                st.setdefault("adopted", []).append({
+                    "gen": gen, "changed": changed, "commits": commits,
+                    "summary": result["proposal_summary"][:120], "when": now(),
+                })
                 st["restart_needed"] = bool(proposal.get("code"))
                 step("adopt", ",".join(changed))
             elif changed:
@@ -674,6 +818,7 @@ def run_generation(state_dir, cfg=None, server=None):
     st["last_error"] = result.get("error", "")
     st["last_score"] = score
     st["updated"] = now()
+    result["adopted"] = bool(changed) and not shadow
     save_state(state_dir, st)
     _write_json(gen_dir / "result.json", result)
     return result
@@ -681,23 +826,99 @@ def run_generation(state_dir, cfg=None, server=None):
 
 # ---------------------------------------------------------------- 守护进程
 
+def server_alive(base):
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/api/health")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def restart_server(state_dir, cfg):
+    """采纳代码改动后重启服务端(停 → 拉活 → 等健康)。"""
+    base = cfg.get("server_url") or "http://127.0.0.1:8600"
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/api/shutdown", method="POST")
+        urllib.request.urlopen(req, timeout=8)
+    except Exception:  # noqa: BLE001
+        pass
+    for _ in range(50):
+        time.sleep(0.6)
+        if not server_alive(base):
+            break
+    app_dir = Path(cfg.get("app_dir") or (Path(state_dir) / "app"))
+    script = app_dir / "server.py"
+    if not script.exists():
+        return False
+    env = dict(os.environ)
+    env["QBALL_HOME"] = str(state_dir)
+    kwargs = {"cwd": str(app_dir), "env": env,
+              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
+    if IS_WINDOWS:
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen([sys.executable, str(script), "--no-browser"], **kwargs)
+    for _ in range(80):
+        time.sleep(0.6)
+        if server_alive(base):
+            return True
+    return False
+
+
 def daemon(state_dir):
     p = init_workspace(state_dir)
     (p["pid"]).write_text(str(os.getpid()), encoding="ascii")
     control_flag(state_dir, ".stop").unlink(missing_ok=True)
     log("daemon started, pid=%d" % os.getpid())
+    failures = 0
+    no_progress = 0
     try:
         while not control_flag(state_dir, ".stop").exists():
             cfg = load_config(state_dir)
             if control_flag(state_dir, ".pause").exists() or not cfg.get("enabled"):
                 time.sleep(5)
                 continue
+
+            # 采纳了代码改动 → 重启服务端生效
+            st = load_state(state_dir)
+            if st.get("restart_needed"):
+                ok = restart_server(state_dir, cfg)
+                st = load_state(state_dir)
+                st["restart_needed"] = False
+                st["last_restart"] = now() if ok else ""
+                if not ok:
+                    st["last_error"] = "采纳后重启服务端失败,请手动 qball stop && qball start"
+                save_state(state_dir, st)
+                log("server restarted" if ok else "server restart FAILED")
+
             run_once = control_flag(state_dir, ".run_once")
             if run_once.exists():
                 run_once.unlink(missing_ok=True)
             try:
-                run_generation(state_dir, cfg)
+                result = run_generation(state_dir, cfg)
+                if result.get("error"):
+                    failures += 1
+                else:
+                    failures = 0
+                score = float(result.get("score") or 0)
+                if result.get("adopted") or score >= 0.7:
+                    no_progress = 0
+                else:
+                    no_progress += 1
+                if failures >= 8:
+                    st = load_state(state_dir)
+                    st["last_error"] = "连续失败 %d 次,已自动暂停" % failures
+                    save_state(state_dir, st)
+                    control_flag(state_dir, ".pause").touch()
+                    log("too many failures, paused")
+                elif failures >= 3:
+                    log("failures=%d,backoff 15min" % failures)
+                    time.sleep(900)
+                elif no_progress >= 12:
+                    log("no progress for %d generations, backoff 30min" % no_progress)
+                    time.sleep(1800)
             except Exception as exc:  # noqa: BLE001
+                failures += 1
                 log("generation failed: %s" % exc)
             time.sleep(max(10, int(cfg.get("cooldown_seconds", 60))))
     finally:

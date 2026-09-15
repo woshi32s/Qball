@@ -1021,6 +1021,7 @@ def api_evolution_status():
             "last_score": st.get("last_score"),
             "last_error": st.get("last_error", ""),
             "shadow_generations": cfg.get("shadow_generations"),
+            "shadow_remaining": max(0, int(cfg.get("shadow_generations", 0)) - int(st.get("generation", 0))),
             "executor_model": cfg.get("executor_model"),
             "judge_model": cfg.get("judge_model"),
             "source_mode": not getattr(sys, "frozen", False),
@@ -1028,6 +1029,7 @@ def api_evolution_status():
             "calls_today": calls_today,
             "recent": scores,
             "adopted": st.get("adopted", [])[-5:],
+            "last_restart": st.get("last_restart", ""),
         })
     except Exception as exc:  # noqa: BLE001
         return api_error(500, str(exc))
@@ -1084,6 +1086,11 @@ def api_evolution_control():
             cfg["shadow_generations"] = max(0, int(payload.get("value") or 0))
             evolution_engine.save_config(STATE, cfg)
             return jsonify({"ok": True})
+        if action == "revert":
+            ok, msg = evolution_engine.revert_last(STATE)
+            if not ok:
+                return api_error(400, msg)
+            return jsonify({"ok": True, "message": msg})
     except Exception as exc:  # noqa: BLE001
         return api_error(500, str(exc))
     return api_error(400, "未知动作")
