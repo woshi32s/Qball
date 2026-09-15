@@ -453,10 +453,10 @@ PROPOSE_PROMPT = (
     "当前附加指令(agent/system_prompt_addendum.md)内容:\n%s\n"
     "已有技能文件: %s\n"
     "请给出一代改进提案,只输出 JSON:\n"
-    '{"scaffold": {"<agent/ 下的相对路径>": "<完整新内容>"},'
+    '{"scaffold": {"<相对路径,必须以 agent/ 开头,例如 agent/system_prompt_addendum.md 或 agent/skills/xxx.md>": "<完整新内容>"},'
     '"code_target": "<可选:要修改的代码文件相对路径,没有则 null>",'
     '"summary": "<一句话说明>"}\n'
-    "约束:scaffold 里只放你认为能提升表现的小改动(比如追加一条经验到 system_prompt_addendum.md 或新增一个技能文件 agent/skills/xx.md);"
+    "约束:scaffold 里只放你认为能提升表现的小改动(比如追加一条经验到 agent/system_prompt_addendum.md 或新增一个技能文件 agent/skills/xx.md);"
     "如果没有把握就给出空 scaffold 并把 code_target 设为 null。"
 )
 
@@ -623,9 +623,13 @@ def propose(state_dir, cfg, server, reflection):
     proposal = {"scaffold": {}, "code_target": None, "summary": str(obj.get("summary") or "")[:200], "raw_reply": reply[:400]}
     scaffold = obj.get("scaffold")
     if isinstance(scaffold, dict):
-        for rel, content in list(scaffold.items())[:5]:
-            rel = str(rel).replace("\\", "/").lstrip("/")
-            if rel.startswith("agent/") and isinstance(content, str) and len(content) <= 20000:
+        for raw_rel, content in list(scaffold.items())[:5]:
+            rel = str(raw_rel).replace("\\", "/").strip().lstrip("./").strip()
+            if not rel:
+                continue
+            if not rel.startswith("agent/"):
+                rel = "agent/" + rel.lstrip("/")
+            if rel.count("..") == 0 and isinstance(content, str) and len(content) <= 20000:
                 proposal["scaffold"][rel] = content
     target = obj.get("code_target")
     if isinstance(target, str) and target.strip() and cfg.get("allow_code_changes"):

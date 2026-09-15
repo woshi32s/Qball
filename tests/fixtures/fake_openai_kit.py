@@ -61,7 +61,7 @@ def proposal_reply():
     n = _PROPOSAL_STATE["n"]
     if n == 1:
         data = {
-            "scaffold": {"agent/system_prompt_addendum.md": "# 附加指令\n- 执行文件类任务前,先列出目录再动手。\n"},
+            "scaffold": {"system_prompt_addendum.md": "# 附加指令\n- 执行文件类任务前,先列出目录再动手。\n"},
             "code_target": None,
             "summary": "把'先列目录'经验写进附加指令",
         }

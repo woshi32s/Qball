@@ -59,8 +59,9 @@ function writeCfg(cfg) {
   const gen1 = JSON.parse(fs.readFileSync(path.join(EVO, 'outcomes', 'gen-0001', 'result.json'), 'utf8'));
   log(gen1.steps.some((s) => s.name === 'shadow'), 'shadow step recorded', gen1.steps.map((s) => s.name).join(','));
   const prop1 = JSON.parse(fs.readFileSync(path.join(EVO, 'outcomes', 'gen-0001', 'proposal.json'), 'utf8'));
-  log(!!prop1.scaffold && Object.keys(prop1.scaffold).length > 0, 'gen1 proposal is scaffold',
-    JSON.stringify(Object.keys(prop1.scaffold || {})));
+  const prop1Keys = Object.keys(prop1.scaffold || {});
+  log(prop1Keys.length > 0 && prop1Keys[0] === 'agent/system_prompt_addendum.md',
+    'gen1 proposal is scaffold + path normalized', prop1Keys.join(','));
   const addendum = fs.readFileSync(path.join(EVO, 'agent', 'system_prompt_addendum.md'), 'utf8');
   log(addendum.trim() === '', 'shadow: addendum NOT applied');
   const journal = fs.readFileSync(path.join(EVO, 'agent', 'memory', 'journal.md'), 'utf8');
