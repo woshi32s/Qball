@@ -304,12 +304,19 @@ def pick_task(state_dir):
     last_scores = {}
     for line in read_jsonl(paths(state_dir)["scores"])[-200:]:
         last_scores[line.get("task")] = line.get("score", 0)
-    pending = [t for t in tasks if last_scores.get(t["id"], -1) < 1.0]
-    if pending:
-        pending.sort(key=lambda t: (last_scores.get(t["id"], -1), t.get("priority", 50)))
-        return pending[0]
-    tasks.sort(key=lambda t: last_scores.get(t["id"], 0))
-    return tasks[0]
+    fails = st.get("task_fails") or {}
+    candidates = [t for t in tasks if int(fails.get(t["id"], 0)) < 3]
+    if not candidates:
+        # 全部卡住:松绑失败次数最少的一个,给它再一次机会
+        weakest = min(tasks, key=lambda t: int(fails.get(t["id"], 0)))
+        fails.pop(weakest["id"], None)
+        st["task_fails"] = fails
+        save_state(state_dir, st)
+        candidates = [t for t in tasks if int(fails.get(t["id"], 0)) < 3] or list(tasks)
+    pending = [t for t in candidates if last_scores.get(t["id"], -1) < 1.0]
+    pool = pending or candidates
+    pool.sort(key=lambda t: (last_scores.get(t["id"], -1), t.get("priority", 50)))
+    return pool[0]
 
 
 def read_jsonl(path):
@@ -630,6 +637,8 @@ def propose(state_dir, cfg, server, reflection):
             if not rel.startswith("agent/"):
                 rel = "agent/" + rel.lstrip("/")
             if rel.count("..") == 0 and isinstance(content, str) and len(content) <= 20000:
+                if rel == "agent/system_prompt_addendum.md" and len(content) > 3000:
+                    continue  # 防止提示词膨胀:附加指令体积上限
                 proposal["scaffold"][rel] = content
     target = obj.get("code_target")
     if isinstance(target, str) and target.strip() and cfg.get("allow_code_changes"):
@@ -737,7 +746,9 @@ def run_generation(state_dir, cfg=None, server=None):
         for line in read_jsonl(p["scores"])[-200:]:
             last_scores[line.get("task")] = line.get("score", 0)
         weak = sum(1 for t in bench_tasks(state_dir) if last_scores.get(t["id"], -1) < 0.6)
-        if weak < 2 or gen % 3 == 0:
+        fails_map = st.get("task_fails") or {}
+        stuck = sum(1 for t in bench_tasks(state_dir) if int(fails_map.get(t["id"], 0)) >= 3)
+        if weak < 2 or stuck >= 2 or gen % 3 == 0:
             new_task, terr = generate_task(state_dir, cfg, server)
             if new_task:
                 step("generate-task", "%s:%s" % (new_task["id"], new_task["title"]))
@@ -773,6 +784,13 @@ def run_generation(state_dir, cfg=None, server=None):
     result["reason"] = reason
     step("score", "%.2f %s" % (score, reason))
 
+    # 卡题追踪:连续低分 3 次的任务会被暂时跳过
+    fails_map = st.setdefault("task_fails", {})
+    if score < 0.5:
+        fails_map[task["id"]] = int(fails_map.get(task["id"], 0)) + 1
+    else:
+        fails_map.pop(task["id"], None)
+
     # 3) 反思
     reflection = reflect(state_dir, cfg, server, task, transcript, score, reason)
     result["reflection"] = reflection
@@ -787,6 +805,9 @@ def run_generation(state_dir, cfg=None, server=None):
     step("propose", result["proposal_summary"][:80])
 
     changed = []
+    if proposal.get("scaffold") and score < 0.5:
+        step("scaffold-gated", "得分 %.2f 偏低:提示词/技能改动仅记录不采纳" % score)
+        proposal["scaffold"] = {}
     if proposal.get("scaffold") or proposal.get("code"):
         if shadow:
             step("shadow", "影子模式:提案仅记录,不落地")
@@ -878,6 +899,16 @@ def restart_server(state_dir, cfg):
     return False
 
 
+def _sleep_checked(state_dir, seconds):
+    """可被停止信号打断的休眠(长退避时也能及时暂停/退出)。"""
+    end = time.time() + seconds
+    while time.time() < end:
+        if control_flag(state_dir, ".stop").exists():
+            return False
+        time.sleep(1)
+    return True
+
+
 def daemon(state_dir):
     global _LOG_FILE
     p = init_workspace(state_dir)
@@ -928,14 +959,17 @@ def daemon(state_dir):
                     log("too many failures, paused")
                 elif failures >= 3:
                     log("failures=%d,backoff 15min" % failures)
-                    time.sleep(900)
+                    if not _sleep_checked(state_dir, 900):
+                        break
                 elif no_progress >= 12:
                     log("no progress for %d generations, backoff 30min" % no_progress)
-                    time.sleep(1800)
+                    if not _sleep_checked(state_dir, 1800):
+                        break
             except Exception as exc:  # noqa: BLE001
                 failures += 1
                 log("generation failed: %s" % exc)
-            time.sleep(max(10, int(cfg.get("cooldown_seconds", 60))))
+            if not _sleep_checked(state_dir, max(10, int(cfg.get("cooldown_seconds", 60)))):
+                break
     finally:
         p["pid"].unlink(missing_ok=True)
         log("daemon stopped")

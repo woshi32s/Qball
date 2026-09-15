@@ -66,7 +66,11 @@ def proposal_reply():
             "summary": "把'先列目录'经验写进附加指令",
         }
     elif n == 2:
-        data = {"scaffold": {}, "code_target": "README.md", "summary": "给 README 加进化标记"}
+        data = {
+            "scaffold": {"agent/skills/should-not-apply.md": "低分代不应被采纳的实验内容。"},
+            "code_target": "README.md",
+            "summary": "给 README 加进化标记(附一个低分门禁测试技能)",
+        }
     else:
         data = {
             "scaffold": {"agent/skills/evo-demo.md": "# 技能:先列目录\n执行文件任务前先 fs.list 看一遍结构,再动手。"},

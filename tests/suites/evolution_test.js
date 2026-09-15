@@ -79,6 +79,10 @@ function writeCfg(cfg) {
   log(readme.indexOf('evolved by qball') >= 0, 'gen2 code change applied to README');
   log(fs.existsSync(path.join(EVO, 'outcomes', 'gen-0002', 'gate.log')), 'gate ran for code change');
   log(/evo\(gen 2\)/.test(gitLog(APP_DIR)), 'gen2 committed in app repo', gitLog(APP_DIR).trim().split('\n')[0]);
+  const gen2res = JSON.parse(fs.readFileSync(path.join(EVO, 'outcomes', 'gen-0002', 'result.json'), 'utf8'));
+  log(gen2res.steps.some((s) => s.name === 'scaffold-gated'), 'low-score scaffold gated (step recorded)');
+  log(!fs.existsSync(path.join(EVO, 'agent', 'skills', 'should-not-apply.md')),
+    'gated scaffold NOT applied to workspace');
 
   /* ---------- 第三代:技能文件(scaffold 采纳) ---------- */
   const r3 = await control('run_once_direct');
