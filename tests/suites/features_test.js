@@ -104,6 +104,19 @@ const OUT = artifacts('features');
     });
     log(md.strong >= 1 && md.em >= 1 && md.li >= 3 && md.pre >= 1 && md.inlineCode >= 1 && md.link >= 1 && md.del >= 1,
       'answer rendered as markdown', JSON.stringify(md));
+    const selectable = await page.evaluate(() => {
+      const txt = document.querySelector('.msg .txt.md');
+      const style = getComputedStyle(txt);
+      const range = document.createRange();
+      range.selectNodeContents(txt);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const selected = sel.toString().length;
+      sel.removeAllRanges();
+      return { userSelect: style.userSelect || style.webkitUserSelect, selected };
+    });
+    log(selectable.userSelect === 'text' && selectable.selected > 0, 'message text selectable', JSON.stringify(selectable));
     await page.screenshot({ path: OUT + '/md_answer.png' }).catch(() => {});
     await page.close();
   }

@@ -185,6 +185,31 @@ def _tools_unsupported(message):
         code in low for code in ("400", "404", "422", "invalid", "unsupported", "unknown"))
 
 
+SESSION_DIR = STATE / "data" / "sessions"
+
+
+def _session_file(session_id):
+    safe = re.sub(r"[^0-9A-Za-z._-]", "", session_id or "")[:64]
+    if not safe:
+        return None
+    return SESSION_DIR / (safe + ".jsonl")
+
+
+def record_session(session_id, records):
+    path = _session_file(session_id)
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for rec in records:
+                item = dict(rec)
+                item.setdefault("t", time.time())
+                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.warning("session write failed: %s", exc)
+
+
 def _env_flag(name, default=True):
     raw = os.environ.get(name)
     if raw is None:
@@ -848,7 +873,76 @@ def api_chat():
     except Exception as exc:
         log.warning("chat failed: %s", exc)
         return api_error(502, str(exc))
+    if session_id:
+        record_session(session_id, [
+            {"role": "user", "content": message[:MAX_MESSAGE_CHARS]},
+            {"role": "assistant", "content": reply, "emotionId": eid},
+        ])
     return jsonify({"emotionId": eid, "reply": reply})
+
+
+@app.get("/api/sessions")
+def api_sessions():
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    out = []
+    if SESSION_DIR.exists():
+        try:
+            files = sorted(SESSION_DIR.glob("*.jsonl"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)[:50]
+        except OSError:
+            files = []
+        for path in files:
+            try:
+                count = 0
+                first_user = ""
+                last = ""
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    count += 1
+                    last = str(rec.get("content") or "")[:60]
+                    if not first_user and rec.get("role") == "user":
+                        first_user = str(rec.get("content") or "")[:60]
+                out.append({
+                    "id": path.stem,
+                    "updated": int(path.stat().st_mtime),
+                    "messages": count,
+                    "preview": first_user or last,
+                })
+            except OSError:
+                continue
+    return jsonify({"sessions": out})
+
+
+@app.get("/api/sessions/<sid>")
+def api_session_detail(sid):
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    path = _session_file(sid)
+    if not path or not path.exists():
+        return api_error(404, "会话不存在")
+    msgs = []
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            role = rec.get("role")
+            content = str(rec.get("content") or "")
+            if role in ("user", "assistant") and content:
+                item = {"role": role, "content": content}
+                if rec.get("emotionId"):
+                    item["emotionId"] = rec.get("emotionId")
+                if rec.get("tools"):
+                    item["tools"] = rec.get("tools")
+                msgs.append(item)
+    except OSError:
+        return api_error(500, "读取失败")
+    return jsonify({"id": sid, "messages": msgs})
 
 
 @app.get("/api/tools")
@@ -914,6 +1008,7 @@ def api_chat_stream():
         text_hint = qball_tools.prompt_section() if use_tools else None
         messages = build_messages(message[:MAX_MESSAGE_CHARS], history,
                                   tools_hint=None if native else text_hint)
+        state = {"eid": "02", "text": [], "tools": []}
         rounds = 0
 
         while rounds < MAX_TOOL_ROUNDS:
@@ -943,9 +1038,12 @@ def api_chat_stream():
                 if sent_emotion:
                     return ""
                 sent_emotion = True
-                out = _sse({"type": "emotion", "id": eid if eid in EMOTION_IDS else "02"})
+                state["eid"] = eid if eid in EMOTION_IDS else "02"
+                out = _sse({"type": "emotion", "id": state["eid"]})
                 if pending_text:
-                    out += _sse({"type": "text", "delta": "".join(pending_text)})
+                    text = "".join(pending_text)
+                    state["text"].append(text)
+                    out += _sse({"type": "text", "delta": text})
                     pending_text.clear()
                 return out
 
@@ -991,6 +1089,7 @@ def api_chat_stream():
                             yield out
                     if piece:
                         if sent_emotion:
+                            state["text"].append(piece)
                             yield _sse({"type": "text", "delta": piece})
                         else:
                             pending_text.append(piece)
@@ -1016,6 +1115,7 @@ def api_chat_stream():
                     if out:
                         yield out
                     if reply:
+                        state["text"].append(reply)
                         yield _sse({"type": "text", "delta": reply})
             elif not sent_emotion:
                 out = emit_emotion(extractor.eid or "02")
@@ -1042,11 +1142,21 @@ def api_chat_stream():
                     calls.append({"id": "text_%d" % rounds, "name": str(action.get("tool")), "args": args})
 
             if not calls:
+                if session_id:
+                    assistant = {"role": "assistant", "content": "".join(state["text"])[:8000],
+                                 "emotionId": state["eid"]}
+                    if state["tools"]:
+                        assistant["tools"] = state["tools"]
+                    record_session(session_id, [
+                        {"role": "user", "content": message[:MAX_MESSAGE_CHARS]},
+                        assistant,
+                    ])
                 yield _sse({"type": "done"})
                 return
 
             results = []
             for call in calls:
+                state["tools"].append(call["name"])
                 yield _sse({"type": "tool_call", "id": call["id"], "name": call["name"], "args": call["args"]})
                 if qball_tools.needs_approval(call["name"]):
                     approval_id = uuid.uuid4().hex[:12]
@@ -1081,6 +1191,15 @@ def api_chat_stream():
                     messages.append({"role": "user",
                                      "content": "[工具结果 %s]\n%s" % (call["name"], text[:8000])})
 
+        if session_id:
+            assistant = {"role": "assistant", "content": "".join(state["text"])[:8000],
+                         "emotionId": state["eid"]}
+            if state["tools"]:
+                assistant["tools"] = state["tools"]
+            record_session(session_id, [
+                {"role": "user", "content": message[:MAX_MESSAGE_CHARS]},
+                assistant,
+            ])
         yield _sse({"type": "error", "message": "工具调用次数到达上限,先停一下"})
 
     return Response(

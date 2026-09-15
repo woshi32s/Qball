@@ -46,6 +46,7 @@ $suites = @(
   @{ File = "suites\auth_ui_test.js"; Env = @{} },
   @{ File = "suites\cfg_ui_test.js"; Env = @{} },
   @{ File = "suites\tools_test.js"; Env = @{} },
+  @{ File = "suites\sessions_test.js"; Env = @{} },
   @{ File = "suites\onboard2_test.js"; Env = @{} },
   @{ File = "suites\agora_test.js"; Env = @{ EB_BASE = "http://127.0.0.1:8462" } }
 )
@@ -62,6 +63,10 @@ foreach ($s in $suites) {
   $pass = ([regex]::Matches($output, "(?m)^PASS")).Count
   $fail = ([regex]::Matches($output, "(?m)^FAIL")).Count
   $note = ""
+  if ($LASTEXITCODE -ne 0 -and $fail -eq 0) {
+    $note = "异常退出 (exit=$LASTEXITCODE)"
+    $fail = 1
+  }
   if ($fail -eq 0 -and $pass -eq 0) { $note = "无断言输出"; $fail = 1 }
   Add-Result $s.File $pass $fail $LASTEXITCODE $note
   foreach ($k in $s.Env.Keys) { Remove-Item -Path ("env:" + $k) -ErrorAction SilentlyContinue }

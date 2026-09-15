@@ -18,7 +18,7 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
       - name: Compile check
-        run: python -m py_compile server.py scripts/update_version.py
+        run: python -m py_compile server.py qball_tools.py scripts/update_version.py
       - name: Server smoke test
         run: |
           python server.py --no-browser &
@@ -33,3 +33,24 @@ jobs:
           curl -fs http://127.0.0.1:8600/js/engine.js -o /dev/null
           curl -fs http://127.0.0.1:8600/manifest.webmanifest -o /dev/null
           kill %1 || true
+
+  full-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install python deps
+        run: pip install -r requirements.txt
+      - name: Install test deps
+        run: npm install --prefix tests --no-audit --no-fund
+      - name: Run full test suite
+        shell: pwsh
+        env:
+          PW_CHANNEL: msedge
+        run: tests/run_all.ps1

@@ -46,6 +46,11 @@
     -webkit-touch-callout: none;
     touch-action: manipulation;
   }
+  /* 让对话内容可以手动选中复制 */
+  .msg, .msg *, .think-text, .tool-body, #subtitle, .obf-reply, #ob-test-reply {
+    user-select: text;
+    -webkit-user-select: text;
+  }
   main {
     display: flex;
     flex-direction: column;
@@ -331,6 +336,9 @@
     padding: 18px 22px 12px;
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
     animation: msgIn 0.25s ease;
+    max-height: 84vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .settings-card h2 {
     font-size: 16px;
@@ -1263,6 +1271,20 @@
   .tool-approval span { flex: 1; min-width: 140px; }
   .tool-approval.decided { opacity: 0.6; }
 
+  /* ---------- 历史会话 ---------- */
+  .session-list { display: flex; flex-direction: column; gap: 6px; max-height: 170px; overflow: auto; }
+  .session-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .session-item .s-meta { opacity: 0.55; flex: none; }
+  .session-item .s-prev { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   /* ---------- Markdown ---------- */
   .msg .txt.md { white-space: normal; }
   .msg .txt.md p { margin: 0 0 8px; }
@@ -1498,6 +1520,8 @@
       </div>
       <label class="switch"><input id="set-tools" type="checkbox" checked><span class="knob"></span></label>
     </div>
+    <div class="cfg-title" id="sessions-title" style="display:none">历史会话(本机记录)</div>
+    <div class="session-list" id="session-list" style="display:none"></div>
     <div class="cfg-title">模型 · 我的接口(仅存本机)</div>
     <div class="setting-row cfg-col">
       <div class="st-title">API 地址</div>
@@ -3468,6 +3492,74 @@
     setStatus('Qball 想执行一个操作,等你确认');
   }
 
+  /* ---------- 历史会话(本机记录) ---------- */
+
+  var sessionsTitleEl = document.getElementById('sessions-title');
+  var sessionListEl = document.getElementById('session-list');
+
+  function loadSessionList() {
+    if (!authState.admin || !sessionListEl) return;
+    apiFetch('/api/sessions').then(function (r) { return r.json(); }).then(function (data) {
+      var list = (data && data.sessions) || [];
+      sessionListEl.innerHTML = '';
+      if (!list.length) {
+        var empty = document.createElement('div');
+        empty.className = 'session-item';
+        empty.textContent = '(还没有聊天记录)';
+        sessionListEl.appendChild(empty);
+      }
+      function pad(n) { return ('0' + n).slice(-2); }
+      list.slice(0, 12).forEach(function (s) {
+        var item = document.createElement('div');
+        item.className = 'session-item';
+        var meta = document.createElement('span');
+        meta.className = 's-meta';
+        var d = new Date((s.updated || 0) * 1000);
+        meta.textContent = pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        var prev = document.createElement('span');
+        prev.className = 's-prev';
+        prev.textContent = s.preview || '(空会话)';
+        prev.title = s.preview || '';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mini-btn';
+        btn.textContent = '载入';
+        btn.addEventListener('click', function () { loadSession(s.id); });
+        item.appendChild(meta);
+        item.appendChild(prev);
+        item.appendChild(btn);
+        sessionListEl.appendChild(item);
+      });
+      if (sessionsTitleEl) sessionsTitleEl.style.display = '';
+      sessionListEl.style.display = '';
+    }).catch(function () {});
+  }
+
+  function loadSession(id) {
+    apiFetch('/api/sessions/' + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (data) {
+      var msgs = ((data && data.messages) || []).filter(function (m) {
+        return m && (m.role === 'user' || m.role === 'assistant') && m.content;
+      }).map(function (m) { return { role: m.role, content: m.content }; });
+      if (!msgs.length) { setStatus('这个会话是空的'); return; }
+      turn += 1;
+      if (abortCtl) { abortCtl.abort(); abortCtl = null; }
+      typer.queue = '';
+      typer.done = false;
+      if (typer.raf) { cancelAnimationFrame(typer.raf); typer.raf = 0; }
+      finalizeBotMsg(false);
+      currentBotMsg = null;
+      history = msgs;
+      saveHistory();
+      chatLogEl.innerHTML = '';
+      logBuilt = false;
+      hintEl = null;
+      buildLog();
+      tail.generationChanged(false);
+      closeSettings();
+      setStatus('已载入历史会话(' + msgs.length + ' 条)');
+    }).catch(function () { setStatus('载入失败,请稍后再试', true); });
+  }
+
   function appendBotDelta(text) {
     if (!currentBotMsg) appendBotMsg();
     if (document.hidden) {
@@ -3659,6 +3751,7 @@
           toolsRow.style.display = '';
           toolsInput.checked = cfg.tools_enabled !== false;
         }
+        loadSessionList();
       }).catch(function () {
         loadUserConfigPanelLocal();
       });
