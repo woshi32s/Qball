@@ -47,12 +47,27 @@ New-Item -ItemType Directory -Path "$Runtime\app" -Force | Out-Null
 $app = Join-Path $Runtime "app"
 Copy-Item (Join-Path $AppRoot "server.py") $app -Force
 Copy-Item (Join-Path $AppRoot "qball_tools.py") $app -Force
+Copy-Item (Join-Path $AppRoot "evolution.py") $app -Force
+Copy-Item (Join-Path $AppRoot "README.md") $app -Force
 Copy-Item (Join-Path $AppRoot "qball.html") $app -Force
 Copy-Item (Join-Path $AppRoot "sw.js") $app -Force
 Copy-Item (Join-Path $AppRoot "manifest.webmanifest") $app -Force
 Copy-Item (Join-Path $AppRoot "js") $app -Recurse -Force
 Copy-Item (Join-Path $AppRoot "fonts") $app -Recurse -Force
 Copy-Item (Join-Path $AppRoot "icons") $app -Recurse -Force
+
+function Invoke-Quiet([string]$Exe, [string[]]$Arguments) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { $null = & $Exe @Arguments 2>&1 } catch { } finally { $ErrorActionPreference = $prev }
+}
+
+# 让测试应用目录成为 git 仓库(进化采纳/回滚依赖)
+Invoke-Quiet git @('-C', $app, 'init', '-q')
+Invoke-Quiet git @('-C', $app, 'config', 'user.name', 'Qball Test')
+Invoke-Quiet git @('-C', $app, 'config', 'user.email', 'test@qball.local')
+Invoke-Quiet git @('-C', $app, 'add', '-A')
+Invoke-Quiet git @('-C', $app, 'commit', '-q', '-m', 'fixture baseline')
 
 function Start-Hidden($cmdline) {
   $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdline }

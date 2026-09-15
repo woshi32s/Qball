@@ -11,6 +11,7 @@
 """
 import json
 import os
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,7 +46,56 @@ LAST_HEADERS = {}
 TOOL_TRIGGERS = [
     ("列一下工作区", "fs.list", {"path": "."}),
     ("跑一条命令", "shell.run", {"command": "echo hi-from-shell"}),
+    ("evo-hello.txt", "fs.write", {"path": "evo-hello.txt", "content": "hi from qball\n"}),
+    ("fib.py", "fs.write", {
+        "path": "fib.py",
+        "content": "a, b = 0, 1\nfor _ in range(11):\n    print(a)\n    a, b = b, a + b\n",
+    }),
 ]
+
+_PROPOSAL_STATE = {"n": 0}
+
+
+def proposal_reply():
+    _PROPOSAL_STATE["n"] += 1
+    n = _PROPOSAL_STATE["n"]
+    if n == 1:
+        data = {
+            "scaffold": {"agent/system_prompt_addendum.md": "# 附加指令\n- 执行文件类任务前,先列出目录再动手。\n"},
+            "code_target": None,
+            "summary": "把'先列目录'经验写进附加指令",
+        }
+    elif n == 2:
+        data = {"scaffold": {}, "code_target": "README.md", "summary": "给 README 加进化标记"}
+    else:
+        data = {
+            "scaffold": {"agent/skills/evo-demo.md": "# 技能:先列目录\n执行文件任务前先 fs.list 看一遍结构,再动手。"},
+            "code_target": None,
+            "summary": "沉淀一个技能文件",
+        }
+    return json.dumps(data, ensure_ascii=False)
+
+
+def evolution_reply(user):
+    if "【评审】" in user:
+        return '{"score": 0.85, "reason": "工具使用顺畅,输出完整"}'
+    if "【反思】" in user:
+        return "这次任务完成得干净,但可以先规划再动手;下次直接复用已有目录结构,少走一步探索。"
+    if "【提案】" in user:
+        return proposal_reply()
+    if "【代码提案】" in user:
+        m = re.search(r"(?ms)----\n(.*?)\n----", user)
+        content = m.group(1) if m else ""
+        find = ""
+        for line in content.splitlines():
+            if line.startswith("# "):
+                find = line
+                break
+        if not find and content.splitlines():
+            find = content.splitlines()[0]
+        replace = find + "\n\n<!-- evolved by qball -->"
+        return json.dumps({"find": find, "replace": replace, "summary": "README 标记进化痕迹"}, ensure_ascii=False)
+    return None
 
 
 def pick_scripted_tool(user_text):
@@ -70,7 +120,11 @@ def pick_reply(messages):
             system = str(m.get("content") or "")
         elif m.get("role") == "user":
             user = str(m.get("content") or "")
-    reply = PROBE_REPLY if PROBE_TEXT in user else RICH_REPLY
+    evo = evolution_reply(user)
+    if evo is not None:
+        reply = evo
+    else:
+        reply = PROBE_REPLY if PROBE_TEXT in user else RICH_REPLY
     if "emotionId" in system:
         return json.dumps({"emotionId": "10", "reply": reply}, ensure_ascii=False)
     return reply

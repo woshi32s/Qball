@@ -382,6 +382,40 @@ function Invoke-DevMode {
   }
 }
 
+function Invoke-Evolve {
+  param([string]$Action = "status")
+  $port = Get-QballPort
+  if (-not $port) { Write-Bad "Qball 未在运行(先 qball start)"; exit 1 }
+  $base = "http://127.0.0.1:$port"
+  if (($Action + '').ToLower() -eq "status" -or -not $Action) {
+    try { $st = Invoke-RestMethod "$base/api/evolution/status" -TimeoutSec 8 } catch { Write-Bad "读取失败"; exit 1 }
+    if (-not $st.available) { Write-Bad "进化模块不可用"; exit 1 }
+    Write-Host ("启用    : " + $(if ($st.enabled) { "是" } else { "否" }))
+    Write-Host ("运行    : " + $(if ($st.running) { "是" } else { "否" }) + $(if ($st.paused) { "(已暂停)" } else { "" }))
+    Write-Host ("代数    : " + $st.generation + "  | 最近得分: " + $st.last_score)
+    Write-Host ("模型    : 执行 " + $st.executor_model + " / 评审 " + $st.judge_model)
+    Write-Host ("模式    : " + $(if ($st.source_mode) { "源码" } else { "安装版(需 dev-setup)" }))
+    Write-Host ("今日调用: " + $st.calls_today)
+    if ($st.recent -and $st.recent.Count -gt 0) {
+      Write-Host "最近几代:"
+      $st.recent | Select-Object -Last 5 | ForEach-Object { Write-Host ("  #" + $_.gen + "  " + $_.title + "  score=" + $_.score) }
+    }
+    if ($st.last_error) { Write-Tip ("上次错误: " + $st.last_error) }
+    return
+  }
+  $map = @{ start = "enable"; stop = "disable"; pause = "pause"; resume = "resume"; once = "run_once" }
+  $act = $map[($Action + '').ToLower()]
+  if (-not $act) { Write-Tip "用法: qball evolve status|start|stop|pause|resume|once"; return }
+  try {
+    $null = Invoke-RestMethod "$base/api/evolution/control" -Method Post -ContentType "application/json" -Body (@{ action = $act } | ConvertTo-Json -Compress) -TimeoutSec 80
+    Write-Ok ("已执行: " + $Action)
+  } catch {
+    $b = ''
+    try { $sr = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream()); $b = $sr.ReadToEnd() } catch { }
+    Write-Bad ("失败: " + $b)
+  }
+}
+
 function Invoke-Uninstall {
   Write-Info "正在卸载 Qball..."
   $port = Get-QballPort
@@ -418,6 +452,7 @@ Qball 命令行工具
   qball update                   检查并更新(源码模式下 git pull)
   qball dev-setup [-From 路径]   开启源码模式(自进化前提;默认从 GitHub 克隆)
   qball devmode on|off           查看/关闭源码模式
+  qball evolve [子命令]          自我进化:status|start|stop|pause|resume|once
   qball uninstall [-Purge]       卸载(-Purge 同时删除配置与数据)
 "@
 }
@@ -439,6 +474,7 @@ switch ($Command.ToLower()) {
   "update" { Invoke-Update }
   "dev-setup" { Invoke-DevSetup -From $(if ($From) { $From } else { $Arg }) }
   "devmode" { Invoke-DevMode $Arg }
+  "evolve" { Invoke-Evolve $Arg }
   "uninstall" { Invoke-Uninstall }
   default { Show-Help }
 }

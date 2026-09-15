@@ -76,6 +76,7 @@ FIRST_CHUNK_TIMEOUT = 30
 NEXT_CHUNK_TIMEOUT = 90
 HISTORY_CHARS = 6000
 MAX_MESSAGE_CHARS = 2000
+MAX_MESSAGE_CHARS_LOCAL = 24000
 MAX_BODY_BYTES = 1_000_000
 
 ALLOWED_EXT = {
@@ -159,6 +160,11 @@ def ensure_state():
 
 ensure_state()
 qball_tools.configure(STATE)
+
+try:
+    import evolution as evolution_engine
+except Exception:  # noqa: BLE001
+    evolution_engine = None
 
 USER_AGENT = "Qball/0.2 (+https://github.com/woshi32s/Qball)"
 
@@ -341,6 +347,13 @@ def parse_reply(content):
 
 def build_messages(message, history, tools_hint=None):
     system = SYSTEM_PROMPT
+    if evolution_engine is not None:
+        try:
+            hint = evolution_engine.prompt_addendum(STATE)
+        except Exception:  # noqa: BLE001
+            hint = ""
+        if hint:
+            system = system + "\n\n" + hint
     if tools_hint:
         system = system + "\n\n" + tools_hint
     messages = [{"role": "system", "content": system}]
@@ -871,16 +884,18 @@ def api_chat():
     message = str(payload.get("message") or "").strip()
     if not message:
         return api_error(400, "message is empty")
+    limit = MAX_MESSAGE_CHARS_LOCAL if is_admin() else MAX_MESSAGE_CHARS
+    message = message[:limit]
     try:
         session_id = (request.headers.get("X-Qball-Session") or "").strip()[:64] or None
-        eid, reply = chat_completion(message[:MAX_MESSAGE_CHARS], payload.get("history"),
+        eid, reply = chat_completion(message, payload.get("history"),
                                      base or None, key or None, model or None, session_id)
     except Exception as exc:
         log.warning("chat failed: %s", exc)
         return api_error(502, str(exc))
     if session_id:
         record_session(session_id, [
-            {"role": "user", "content": message[:MAX_MESSAGE_CHARS]},
+            {"role": "user", "content": message},
             {"role": "assistant", "content": reply, "emotionId": eid},
         ])
     return jsonify({"emotionId": eid, "reply": reply})
@@ -950,6 +965,121 @@ def api_session_detail(sid):
     return jsonify({"id": sid, "messages": msgs})
 
 
+# ---------------------------------------------------------------- 自我进化
+
+def spawn_evolution_daemon():
+    """启动进化守护进程(源码模式专属),返回 (pid, error)。"""
+    if evolution_engine is None:
+        return None, "evolution 模块不可用"
+    pid = evolution_engine.daemon_pid(STATE)
+    if pid:
+        return pid, ""
+    if getattr(sys, "frozen", False):
+        return None, "自我进化需要源码模式:先运行 qball dev-setup"
+    script = Path(APP_HOME) / "evolution.py"
+    if not script.exists():
+        return None, "源码目录缺少 evolution.py"
+    env = dict(os.environ)
+    env["QBALL_HOME"] = str(STATE)
+    kwargs = {"cwd": str(APP_HOME), "env": env,
+              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    proc = subprocess.Popen([sys.executable, str(script), "daemon"], **kwargs)
+    return proc.pid, ""
+
+
+@app.get("/api/evolution/status")
+def api_evolution_status():
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    if evolution_engine is None:
+        return jsonify({"available": False})
+    try:
+        cfg = evolution_engine.load_config(STATE)
+        st = evolution_engine.load_state(STATE)
+        pid = evolution_engine.daemon_pid(STATE)
+        scores = evolution_engine.read_jsonl(evolution_engine.paths(STATE)["scores"])[-10:]
+        usage = evolution_engine.read_jsonl(evolution_engine.paths(STATE)["usage"])
+        today = time.strftime("%Y-%m-%d")
+        calls_today = sum(1 for u in usage if str(u.get("when", "")).startswith(today))
+        return jsonify({
+            "available": True,
+            "enabled": bool(cfg.get("enabled")),
+            "running": pid is not None,
+            "paused": evolution_engine.control_flag(STATE, ".pause").exists(),
+            "generation": st.get("generation", 0),
+            "last_score": st.get("last_score"),
+            "last_error": st.get("last_error", ""),
+            "shadow_generations": cfg.get("shadow_generations"),
+            "executor_model": cfg.get("executor_model"),
+            "judge_model": cfg.get("judge_model"),
+            "source_mode": not getattr(sys, "frozen", False),
+            "app_dir": str(cfg.get("app_dir") or (STATE / "app")),
+            "calls_today": calls_today,
+            "recent": scores,
+            "adopted": st.get("adopted", [])[-5:],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+
+
+@app.post("/api/evolution/control")
+def api_evolution_control():
+    if not is_admin():
+        return api_error(403, "仅本机可操作")
+    if evolution_engine is None:
+        return api_error(503, "evolution 模块不可用")
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action") or "").strip()
+    cfg = evolution_engine.load_config(STATE)
+    try:
+        if action == "enable":
+            cfg["enabled"] = True
+            evolution_engine.save_config(STATE, cfg)
+            evolution_engine.control_flag(STATE, ".stop").unlink(missing_ok=True)
+            pid, err = spawn_evolution_daemon()
+            if err:
+                return api_error(400, err)
+            return jsonify({"ok": True, "pid": pid})
+        if action == "disable":
+            cfg["enabled"] = False
+            evolution_engine.save_config(STATE, cfg)
+            evolution_engine.control_flag(STATE, ".stop").touch()
+            return jsonify({"ok": True})
+        if action == "pause":
+            evolution_engine.control_flag(STATE, ".pause").touch()
+            return jsonify({"ok": True})
+        if action == "resume":
+            evolution_engine.control_flag(STATE, ".pause").unlink(missing_ok=True)
+            return jsonify({"ok": True})
+        if action == "run_once":
+            evolution_engine.control_flag(STATE, ".run_once").touch()
+            if not evolution_engine.daemon_pid(STATE):
+                pid, err = spawn_evolution_daemon()
+                if err:
+                    return api_error(400, err)
+            return jsonify({"ok": True})
+        if action == "run_once_direct":
+            result = evolution_engine.run_generation(STATE)
+            return jsonify({"ok": True, "result": {
+                k: result.get(k) for k in ("gen", "score", "shadow", "proposal_summary", "reflection", "error")}})
+        if action == "set_models":
+            for key in ("executor_model", "judge_model"):
+                value = str(payload.get(key) or "").strip()
+                if value:
+                    cfg[key] = value[:128]
+            evolution_engine.save_config(STATE, cfg)
+            return jsonify({"ok": True})
+        if action == "set_shadow":
+            cfg["shadow_generations"] = max(0, int(payload.get("value") or 0))
+            evolution_engine.save_config(STATE, cfg)
+            return jsonify({"ok": True})
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+    return api_error(400, "未知动作")
+
+
 @app.get("/api/tools")
 def api_tools():
     if not is_admin():
@@ -1007,11 +1137,14 @@ def api_chat_stream():
     history = payload.get("history")
     use_tools = bool(CONFIG.get("tools_enabled", True)) and not payload.get("no_tools")
     session_id = (request.headers.get("X-Qball-Session") or "").strip()[:64] or None
+    auto_approve = request.headers.get("X-Qball-Auto-Approve") == "1" and is_admin()
+    limit = MAX_MESSAGE_CHARS_LOCAL if is_admin() else MAX_MESSAGE_CHARS
+    msg_text = message[:limit]
 
     def generate():
         native = use_tools
         text_hint = qball_tools.prompt_section() if use_tools else None
-        messages = build_messages(message[:MAX_MESSAGE_CHARS], history,
+        messages = build_messages(msg_text, history,
                                   tools_hint=None if native else text_hint)
         state = {"eid": "02", "text": [], "tools": []}
         rounds = 0
@@ -1026,7 +1159,7 @@ def api_chat_stream():
                 err = str(exc)
                 if tool_defs and _tools_unsupported(err):
                     native = False
-                    messages = build_messages(message[:MAX_MESSAGE_CHARS], history, tools_hint=text_hint)
+                    messages = build_messages(msg_text, history, tools_hint=text_hint)
                     continue
                 log.warning("stream open failed: %s", exc)
                 yield _sse({"type": "error", "message": err})
@@ -1153,7 +1286,7 @@ def api_chat_stream():
                     if state["tools"]:
                         assistant["tools"] = state["tools"]
                     record_session(session_id, [
-                        {"role": "user", "content": message[:MAX_MESSAGE_CHARS]},
+                        {"role": "user", "content": msg_text},
                         assistant,
                     ])
                 yield _sse({"type": "done"})
@@ -1163,7 +1296,7 @@ def api_chat_stream():
             for call in calls:
                 state["tools"].append(call["name"])
                 yield _sse({"type": "tool_call", "id": call["id"], "name": call["name"], "args": call["args"]})
-                if qball_tools.needs_approval(call["name"]):
+                if qball_tools.needs_approval(call["name"]) and not auto_approve:
                     approval_id = uuid.uuid4().hex[:12]
                     yield _sse({"type": "approval_required", "id": approval_id,
                                 "name": call["name"], "args": call["args"]})
@@ -1202,7 +1335,7 @@ def api_chat_stream():
             if state["tools"]:
                 assistant["tools"] = state["tools"]
             record_session(session_id, [
-                {"role": "user", "content": message[:MAX_MESSAGE_CHARS]},
+                {"role": "user", "content": msg_text},
                 assistant,
             ])
         yield _sse({"type": "error", "message": "工具调用次数到达上限,先停一下"})
@@ -1381,6 +1514,17 @@ def main():
         log.warning("ACCESS_CODE 未设置:任何人都可以直接调用接口(仅适合本机使用)")
     if not CONFIG["api_key"]:
         log.warning("未配置 API key:在 %s 或环境变量 B_AI_KEY 中设置", config_path())
+    if evolution_engine is not None:
+        try:
+            _evo_cfg = evolution_engine.load_config(STATE)
+            if _evo_cfg.get("enabled") and not evolution_engine.daemon_pid(STATE):
+                _pid, _err = spawn_evolution_daemon()
+                if _err:
+                    log.warning("evolution daemon: %s", _err)
+                else:
+                    log.info("evolution daemon started (pid %s)", _pid)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("evolution autostart failed: %s", exc)
 
     from waitress import serve as waitress_serve
 

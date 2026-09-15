@@ -1285,6 +1285,9 @@
   .session-item .s-meta { opacity: 0.55; flex: none; }
   .session-item .s-prev { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* ---------- 自我进化 ---------- */
+  .evo-btns { display: flex; gap: 6px; flex: none; }
+
   /* ---------- Markdown ---------- */
   .msg .txt.md { white-space: normal; }
   .msg .txt.md p { margin: 0 0 8px; }
@@ -1522,6 +1525,25 @@
     </div>
     <div class="cfg-title" id="sessions-title" style="display:none">历史会话(本机记录)</div>
     <div class="session-list" id="session-list" style="display:none"></div>
+    <div class="cfg-title" id="evo-title" style="display:none">自我进化</div>
+    <div id="evo-panel" style="display:none">
+      <div class="setting-row">
+        <div>
+          <div class="st-title">进化开关</div>
+          <div class="st-desc" id="evo-status">读取中…</div>
+        </div>
+        <label class="switch"><input id="set-evo" type="checkbox"><span class="knob"></span></label>
+      </div>
+      <div class="setting-row" id="evo-actions" style="display:none">
+        <div>
+          <div class="st-desc" id="evo-recent"></div>
+        </div>
+        <div class="evo-btns">
+          <button class="mini-btn" id="evo-pause" type="button">暂停</button>
+          <button class="mini-btn" id="evo-once" type="button">跑一代</button>
+        </div>
+      </div>
+    </div>
     <div class="cfg-title">模型 · 我的接口(仅存本机)</div>
     <div class="setting-row cfg-col">
       <div class="st-title">API 地址</div>
@@ -3497,6 +3519,91 @@
   var sessionsTitleEl = document.getElementById('sessions-title');
   var sessionListEl = document.getElementById('session-list');
 
+  /* ---------- 自我进化面板 ---------- */
+
+  var evoTitle = document.getElementById('evo-title');
+  var evoPanel = document.getElementById('evo-panel');
+  var evoStatusEl = document.getElementById('evo-status');
+  var evoInput = document.getElementById('set-evo');
+  var evoActions = document.getElementById('evo-actions');
+  var evoRecent = document.getElementById('evo-recent');
+  var evoPauseBtn = document.getElementById('evo-pause');
+  var evoOnceBtn = document.getElementById('evo-once');
+
+  function evoControl(action) {
+    return apiFetch('/api/evolution/control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action })
+    }).then(function (r) { return r.json(); });
+  }
+
+  function renderEvo(st) {
+    if (!st || !st.available || !evoStatusEl) return;
+    var line = (st.running ? '运行中' : (st.enabled ? '已启用(等待守护进程)' : '未启用')) +
+      ' · 第 ' + (st.generation || 0) + ' 代';
+    if (st.paused) line += ' · 已暂停';
+    if (st.executor_model) line += ' · 模型 ' + st.executor_model;
+    if (st.last_score !== null && st.last_score !== undefined) line += ' · 最近得分 ' + st.last_score;
+    if (st.last_error) line += ' · 上次错误: ' + st.last_error;
+    evoStatusEl.textContent = line;
+    evoInput.checked = !!st.enabled;
+    evoActions.style.display = st.enabled ? '' : 'none';
+    evoPauseBtn.textContent = st.paused ? '继续' : '暂停';
+    var recent = (st.recent || []).slice(-3).map(function (r) {
+      return '#' + r.gen + ' ' + (r.title || r.task) + ' ' + r.score;
+    }).join(' · ');
+    evoRecent.textContent = recent ? ('最近: ' + recent) : '还没有进化记录';
+  }
+
+  function loadEvolutionPanel() {
+    if (!authState.admin || !evoPanel) return;
+    apiFetch('/api/evolution/status').then(function (r) { return r.json(); }).then(function (st) {
+      if (!st || !st.available) return;
+      evoTitle.style.display = '';
+      evoPanel.style.display = '';
+      if (!st.source_mode) {
+        evoStatusEl.textContent = '需要源码模式:运行 qball dev-setup 后可用';
+        evoInput.disabled = true;
+        return;
+      }
+      renderEvo(st);
+    }).catch(function () {});
+  }
+
+  if (evoInput) {
+    evoInput.addEventListener('change', function () {
+      var on = evoInput.checked;
+      evoInput.disabled = true;
+      evoControl(on ? 'enable' : 'disable').then(function (d) {
+        if (d && d.error) { setStatus(d.error, true); evoInput.checked = !on; }
+        else { setStatus(on ? '自我进化已启动' : '自我进化已关闭'); }
+      }).catch(function () {
+        evoInput.checked = !on;
+        setStatus('操作失败,请稍后再试', true);
+      }).then(function () {
+        evoInput.disabled = false;
+        setTimeout(loadEvolutionPanel, 800);
+      });
+    });
+  }
+  if (evoPauseBtn) {
+    evoPauseBtn.addEventListener('click', function () {
+      var resume = evoPauseBtn.textContent === '继续';
+      evoControl(resume ? 'resume' : 'pause').then(function () {
+        setTimeout(loadEvolutionPanel, 500);
+      });
+    });
+  }
+  if (evoOnceBtn) {
+    evoOnceBtn.addEventListener('click', function () {
+      setStatus('已触发一代进化,稍后可在状态里查看');
+      evoControl('run_once').then(function () {
+        setTimeout(loadEvolutionPanel, 800);
+      });
+    });
+  }
+
   function loadSessionList() {
     if (!authState.admin || !sessionListEl) return;
     apiFetch('/api/sessions').then(function (r) { return r.json(); }).then(function (data) {
@@ -3752,6 +3859,7 @@
           toolsInput.checked = cfg.tools_enabled !== false;
         }
         loadSessionList();
+        loadEvolutionPanel();
       }).catch(function () {
         loadUserConfigPanelLocal();
       });
