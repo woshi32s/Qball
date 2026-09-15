@@ -228,7 +228,7 @@ def init_workspace(state_dir):
         for task in SEED_TASKS:
             save_task(state_dir, task)
 
-    # agent 产物自身的版本库(只版本化 agent/,状态文件不进库,避免回滚冲突)
+    # agent 产物自身的版本库(只版本化 agent/ 等产出,状态文件不进库,避免回滚冲突)
     if not (p["root"] / ".git").exists():
         gitignore = p["root"] / ".gitignore"
         if not gitignore.exists():
@@ -243,6 +243,19 @@ def init_workspace(state_dir):
             git_commit(p["root"], "init evolution workspace")
         except Exception as exc:  # noqa: BLE001
             log("git init failed: %s" % exc)
+    # 维护:把已跟踪但属于运行状态的忽略文件移出版本库(修复历史遗留,幂等)
+    try:
+        runtime_files = ["scores.jsonl", "usage.jsonl", "state.json", "config.json",
+                         "daemon.log", "daemon.pid", "last-task-gen.json"]
+        for t in runtime_files:
+            _run(["git", "-C", str(p["root"]), "rm", "--cached", "-q", "--ignore-unmatch", "--", t])
+        _run(["git", "-C", str(p["root"]), "rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", "control", "outcomes"])
+        code, staged = _run(["git", "-C", str(p["root"]), "diff", "--cached", "--name-only"])
+        if staged.strip():
+            git_commit(p["root"], "chore: untrack runtime state files")
+            log("untracked runtime files from evolution repo:\n%s" % staged.strip()[:300])
+    except Exception as exc:  # noqa: BLE001
+        log("untrack maintenance failed: %s" % exc)
     return p
 
 
