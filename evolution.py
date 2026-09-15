@@ -99,9 +99,18 @@ def now():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+_LOG_FILE = None
+
+
 def log(msg):
     line = "[%s] %s" % (now(), msg)
     print(line, flush=True)
+    if _LOG_FILE:
+        try:
+            with open(_LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
 
 
 def _read_json(path, default=None):
@@ -866,7 +875,9 @@ def restart_server(state_dir, cfg):
 
 
 def daemon(state_dir):
+    global _LOG_FILE
     p = init_workspace(state_dir)
+    _LOG_FILE = str(p["log"])
     (p["pid"]).write_text(str(os.getpid()), encoding="ascii")
     control_flag(state_dir, ".stop").unlink(missing_ok=True)
     log("daemon started, pid=%d" % os.getpid())
