@@ -770,6 +770,7 @@ def api_config_get():
         "voice": CONFIG["voice"],
         "robot": bool(CONFIG.get("robot", True)),
         "key": bool(CONFIG["api_key"]),
+        "tools_enabled": bool(CONFIG.get("tools_enabled", True)),
     })
 
 
@@ -792,6 +793,7 @@ def api_config_set():
         "voice": CONFIG["voice"],
         "robot": bool(CONFIG.get("robot", True)),
         "key": bool(CONFIG["api_key"]),
+        "tools_enabled": bool(CONFIG.get("tools_enabled", True)),
     })
 
 

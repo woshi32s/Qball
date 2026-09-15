@@ -69,6 +69,22 @@ const FAKE = process.env.EB_FAKE || 'http://127.0.0.1:8484';
   }));
   log(reloaded.model === 'fake-model-beta', 'model persisted across reload', reloaded.model);
 
+  /* ---------- 工具开关(管理员) ---------- */
+  const tools = await page.evaluate(() => {
+    const row = document.getElementById('tools-row');
+    const input = document.getElementById('set-tools');
+    return { visible: !!(row && row.style.display !== 'none'), checked: !!(input && input.checked) };
+  });
+  log(tools.visible && tools.checked, 'tools toggle shown & on', JSON.stringify(tools));
+  await page.click('#tools-row .switch');
+  await page.waitForTimeout(900);
+  const toolsOff = await page.evaluate(() => fetch('/api/config').then((r) => r.json()).then((c) => c.tools_enabled));
+  log(toolsOff === false, 'tools toggle off persists', toolsOff);
+  await page.click('#tools-row .switch');
+  await page.waitForTimeout(900);
+  const toolsOn = await page.evaluate(() => fetch('/api/config').then((r) => r.json()).then((c) => c.tools_enabled));
+  log(toolsOn === true, 'tools toggle back on', toolsOn);
+
   await browser.close();
   console.log(failCount() === 0 ? 'ALL PASS' : failCount() + ' FAILURES');
   process.exit(failCount() ? 1 : 0);

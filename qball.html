@@ -1491,6 +1491,13 @@
       </div>
       <label class="switch"><input id="set-reduced" type="checkbox"><span class="knob"></span></label>
     </div>
+    <div class="setting-row" id="tools-row" style="display:none">
+      <div>
+        <div class="st-title">启用工具</div>
+        <div class="st-desc">允许小球使用文件 / 命令 / 网页搜索 / 笔记等工具;命令执行前会向你确认。</div>
+      </div>
+      <label class="switch"><input id="set-tools" type="checkbox" checked><span class="knob"></span></label>
+    </div>
     <div class="cfg-title">模型 · 我的接口(仅存本机)</div>
     <div class="setting-row cfg-col">
       <div class="st-title">API 地址</div>
@@ -3624,6 +3631,10 @@
         cfgKey.value = '';
         cfgKey.placeholder = cfg.key ? '已保存 · 留空则不改动' : 'sk-...';
         setCfgStatus('本机配置文件已加载' + (cfg.model ? ' · ' + cfg.model : ''));
+        if (toolsRow && toolsInput) {
+          toolsRow.style.display = '';
+          toolsInput.checked = cfg.tools_enabled !== false;
+        }
       }).catch(function () {
         loadUserConfigPanelLocal();
       });
@@ -3760,6 +3771,8 @@
   var aboutCheckEl = document.getElementById('about-check');
   var autostartRow = document.getElementById('autostart-row');
   var autostartInput = document.getElementById('set-autostart');
+  var toolsRow = document.getElementById('tools-row');
+  var toolsInput = document.getElementById('set-tools');
   var quitEl = document.getElementById('about-quit');
   var appVersion = '';
 
@@ -3792,6 +3805,24 @@
         autostartInput.checked = !enabled;
         setStatus('设置失败,请稍后再试');
       }).then(function () { autostartInput.disabled = false; });
+    });
+  }
+
+  if (toolsInput) {
+    toolsInput.addEventListener('change', function () {
+      var enabled = toolsInput.checked;
+      toolsInput.disabled = true;
+      apiFetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tools_enabled: enabled })
+      }).then(function (res) { return res.json(); }).then(function (data) {
+        toolsInput.checked = data.tools_enabled !== false;
+        setStatus(data.tools_enabled !== false ? '工具已开启' : '工具已关闭');
+      }).catch(function () {
+        toolsInput.checked = !enabled;
+        setStatus('设置失败,请稍后再试');
+      }).then(function () { toolsInput.disabled = false; });
     });
   }
 
