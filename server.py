@@ -62,9 +62,13 @@ START_TIME = time.time()
 
 
 def config_path():
-    """打包后的本机应用使用 ~/.qball/config.json;源码/容器运行沿用项目内 config.json。"""
+    """打包运行时使用 ~/.qball/config.json;源码模式优先复用状态目录配置(与安装版一致),
+    否则退回项目内 config.json(纯开发/容器)。"""
+    state_cfg = STATE / "config.json"
     if getattr(sys, "frozen", False):
-        return STATE / "config.json"
+        return state_cfg
+    if state_cfg.exists():
+        return state_cfg
     return APP_HOME / "config.json"
 
 MAX_TTS_CHARS = 1500
@@ -669,6 +673,7 @@ def api_health():
     return jsonify({
         "app": APP_ID,
         "version": VERSION,
+        "mode": "exe" if getattr(sys, "frozen", False) else "source",
         "uptime": int(time.time() - START_TIME),
         "ok": True,
         "model": CONFIG["model"],

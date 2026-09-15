@@ -4,6 +4,7 @@
 param(
   [Parameter(Position = 0)][string]$Command = "help",
   [Parameter(Position = 1)][string]$Arg,
+  [string]$From,
   [int]$Tail = 30,
   [switch]$Purge
 )
@@ -18,6 +19,7 @@ $StateDir = if ($env:QBALL_HOME) { $env:QBALL_HOME } else { Join-Path $env:USERP
 $LogFile = Join-Path $StateDir "logs\qball.log"
 $VersionFile = Join-Path $StateDir "version.txt"
 $PortFile = Join-Path $StateDir "port.txt"
+$ModeFile = Join-Path $StateDir "mode.json"
 
 function Find-Exe {
   foreach ($c in @((Join-Path $AppDir "Qball.exe"), (Join-Path $AppDir "dist\Qball.exe"))) {
@@ -31,6 +33,51 @@ function Write-Ok($m) { Write-Host "  [OK] $m" -ForegroundColor Green }
 function Write-Bad($m) { Write-Host "  [!!] $m" -ForegroundColor Red }
 function Write-Tip($m) { Write-Host "  [--] $m" -ForegroundColor Yellow }
 function Write-Info($m) { Write-Host $m }
+
+function Get-SourceMode {
+  if (-not (Test-Path $ModeFile)) { return $null }
+  try {
+    $m = Get-Content $ModeFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($m.mode -ne 'source') { return $null }
+    $pyW = Join-Path $m.venv 'Scripts\pythonw.exe'
+    $srv = Join-Path $m.app_dir 'server.py'
+    if ((Test-Path $pyW) -and (Test-Path $srv)) { return $m }
+  } catch { }
+  return $null
+}
+
+function Write-SourceMode($appDir, $venv) {
+  New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+  @{ mode = 'source'; app_dir = $appDir; venv = $venv; since = (Get-Date -Format 's') } |
+    ConvertTo-Json | Set-Content $ModeFile -Encoding UTF8
+}
+
+function Clear-SourceMode {
+  Remove-Item $ModeFile -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-Native {
+  # 原生命令安全执行:stderr 不当异常(避免 git/pip 的正常进度输出中断脚本)
+  param([string]$Exe, [string[]]$Arguments)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = & $Exe @Arguments 2>&1 | Out-String
+    return @{ Code = $LASTEXITCODE; Text = $out.Trim() }
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
+function Find-Python {
+  foreach ($c in @('python', 'py')) {
+    try {
+      $v = & $c --version 2>$null
+      if ($LASTEXITCODE -eq 0 -and $v) { return $c }
+    } catch { }
+  }
+  return $null
+}
 
 function Get-QballPort {
   $ports = @()
@@ -88,15 +135,25 @@ function Test-Autostart {
 }
 
 function Enable-Autostart {
-  if (-not $Exe) { Write-Bad "未找到 Qball.exe,请先运行安装脚本 install.ps1"; exit 1 }
-  $r = Invoke-Schtasks /Create /F /TN $TaskName /SC ONLOGON /TR "`"$Exe`" --no-browser"
+  $src = Get-SourceMode
+  if ($src) {
+    $target = Join-Path $src.venv 'Scripts\pythonw.exe'
+    $args = "`"$(Join-Path $src.app_dir 'server.py')`" --no-browser"
+    $working = $src.app_dir
+  } else {
+    if (-not $Exe) { Write-Bad "未找到 Qball.exe,请先运行安装脚本 install.ps1"; exit 1 }
+    $target = $Exe
+    $args = "--no-browser"
+    $working = (Split-Path $Exe -Parent)
+  }
+  $r = Invoke-Schtasks /Create /F /TN $TaskName /SC ONLOGON /TR "`"$target`" $args"
   if ($r.Code -eq 0) { Write-Ok "已开启开机自启(计划任务)"; return }
   $lnk = Get-StartupLnk
   $ws = New-Object -ComObject WScript.Shell
   $sc = $ws.CreateShortcut($lnk)
-  $sc.TargetPath = $Exe
-  $sc.Arguments = "--no-browser"
-  $sc.WorkingDirectory = (Split-Path $Exe -Parent)
+  $sc.TargetPath = $target
+  $sc.Arguments = $args
+  $sc.WorkingDirectory = $working
   $sc.Save()
   if (Test-Path $lnk) { Write-Ok "已开启开机自启(启动文件夹方式)" }
   else { Write-Bad "设置失败,请手动把 Qball 快捷方式放入启动文件夹"; exit 1 }
@@ -116,9 +173,16 @@ function Start-Qball {
     Start-Process ("http://127.0.0.1:{0}/" -f $port)
     return
   }
-  if (-not $Exe) { Write-Bad "未找到 Qball.exe,请先运行安装脚本 install.ps1"; exit 1 }
-  Start-Process -FilePath $Exe -ArgumentList "--no-browser" | Out-Null
-  Write-Info "正在启动..."
+  $src = Get-SourceMode
+  if ($src) {
+    $pyW = Join-Path $src.venv 'Scripts\pythonw.exe'
+    Start-Process -FilePath $pyW -ArgumentList "server.py", "--no-browser" -WorkingDirectory $src.app_dir | Out-Null
+    Write-Info "正在启动(源码模式)..."
+  } else {
+    if (-not $Exe) { Write-Bad "未找到 Qball.exe,请先运行安装脚本 install.ps1"; exit 1 }
+    Start-Process -FilePath $Exe -ArgumentList "--no-browser" | Out-Null
+    Write-Info "正在启动..."
+  }
   $port = Wait-Healthy 40
   if ($port) {
     Write-Ok "已启动: http://127.0.0.1:$port/"
@@ -142,6 +206,7 @@ function Stop-Qball {
 }
 
 function Show-Status {
+  $src = Get-SourceMode
   $port = Get-QballPort
   if ($port) {
     Write-Host "状态    : 运行中"
@@ -149,6 +214,7 @@ function Show-Status {
     try {
       $h = Invoke-RestMethod ("http://127.0.0.1:{0}/api/health" -f $port) -TimeoutSec 5
       Write-Host "版本    : $($h.version)"
+      Write-Host ("运行模式: " + $(if ($h.mode -eq 'source') { "源码模式" } else { "安装版" }))
       Write-Host ("运行时长: " + (Format-Uptime $h.uptime))
       Write-Host "模型    : $($h.model)"
       Write-Host ("语音    : " + $(if ($h.tts) { "开" } else { "关" }))
@@ -157,6 +223,7 @@ function Show-Status {
   } else {
     Write-Host "状态    : 未运行"
   }
+  Write-Host ("开发者: " + $(if ($src) { "源码模式已启用 ($($src.app_dir))" } else { "未启用(qball dev-setup 开启)" }))
   Write-Host ("开机自启: " + $(if (Test-Autostart) { "开" } else { "关" }))
   Write-Host "配置目录: $StateDir"
   if ($Exe) { Write-Host "程序位置: $Exe" } else { Write-Host "程序位置: 未找到 Qball.exe" }
@@ -215,6 +282,17 @@ function Get-LocalVersion {
 }
 
 function Invoke-Update {
+  $src = Get-SourceMode
+  if ($src) {
+    Write-Info "源码模式:从来源仓库更新代码…"
+    $r = Invoke-Native git @('-C', $src.app_dir, 'pull', '--ff-only')
+    Write-Host $r.Text
+    $pyExe = Join-Path $src.venv 'Scripts\python.exe'
+    Write-Info "同步依赖…"
+    $null = Invoke-Native $pyExe @('-m', 'pip', 'install', '-r', (Join-Path $src.app_dir 'requirements.txt'), '-q')
+    Write-Ok "源码已更新(stop 后再 start 生效)"
+    return
+  }
   $local = Get-LocalVersion
   Write-Info ("当前版本: " + $(if ($local) { $local } else { "未知" }))
   $remote = Get-RemoteVersion
@@ -243,6 +321,67 @@ function Invoke-Update {
   Start-Qball
 }
 
+function Invoke-DevSetup {
+  [CmdletBinding()]
+  param([string]$From)
+  $appDir = Join-Path $StateDir 'app'
+  $venv = Join-Path $appDir '.venv'
+  if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Bad "需要 git,请先安装: https://git-scm.com"; exit 1 }
+  if (-not $From) { $From = 'https://github.com/woshi32s/Qball.git' }
+  $hasRepo = (Test-Path (Join-Path $appDir '.git')) -and (Test-Path (Join-Path $appDir 'server.py'))
+  if ($hasRepo) {
+    Write-Info "更新源码: $appDir"
+    $r = Invoke-Native git @('-C', $appDir, 'pull', '--ff-only')
+    Write-Host $r.Text
+  } else {
+    Write-Info "克隆源码: $From"
+    if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force -ErrorAction SilentlyContinue }
+    $r = Invoke-Native git @('clone', '--depth', '1', $From, $appDir)
+    if (-not (Test-Path (Join-Path $appDir 'server.py'))) {
+      Write-Bad "克隆失败:"
+      Write-Host $r.Text
+      exit 1
+    }
+  }
+  $py = Find-Python
+  if (-not $py) { Write-Bad "未找到 Python,请先安装 Python 3.10+(https://www.python.org)"; exit 1 }
+  $pyExe = Join-Path $venv 'Scripts\python.exe'
+  if (-not (Test-Path $pyExe)) {
+    Write-Info "创建独立 Python 环境…"
+    $null = Invoke-Native $py @('-m', 'venv', $venv)
+    if (-not (Test-Path $pyExe)) { Write-Bad "创建虚拟环境失败"; exit 1 }
+  }
+  Write-Info "安装依赖(首次约 1-3 分钟)…"
+  $null = Invoke-Native $pyExe @('-m', 'pip', 'install', '--upgrade', 'pip', '-q')
+  $r = Invoke-Native $pyExe @('-m', 'pip', 'install', '-r', (Join-Path $appDir 'requirements.txt'), '-q')
+  if ($r.Code -ne 0) {
+    Write-Tip "默认源不可用,切换国内镜像重试…"
+    $r = Invoke-Native $pyExe @('-m', 'pip', 'install', '-r', (Join-Path $appDir 'requirements.txt'), '-q',
+                                '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple')
+  }
+  if ($r.Code -ne 0) { Write-Bad "依赖安装失败,请检查网络后重试"; Write-Host $r.Text; exit 1 }
+  Write-SourceMode $appDir $venv
+  Write-Ok "源码模式已启用"
+  Write-Host "  源码目录: $appDir"
+  Write-Host "  现在可用: qball start(以源码模式运行)"
+  Write-Host "  恢复安装版: qball devmode off"
+}
+
+function Invoke-DevMode {
+  param([string]$OnOff)
+  switch (($OnOff + '').ToLower()) {
+    "off" {
+      Clear-SourceMode
+      Write-Ok "已恢复安装版模式(下次 qball start 生效;正在运行的先 qball stop)"
+    }
+    default {
+      $src = Get-SourceMode
+      if ($src) { Write-Ok "源码模式已启用: $($src.app_dir)" }
+      else { Write-Tip "未启用源码模式。运行 qball dev-setup 开启(为自我进化做准备)" }
+    }
+  }
+}
+
 function Invoke-Uninstall {
   Write-Info "正在卸载 Qball..."
   $port = Get-QballPort
@@ -250,6 +389,7 @@ function Invoke-Uninstall {
   $null = Invoke-Schtasks /Delete /F /TN $TaskName
   $lnk = Get-StartupLnk
   if (Test-Path $lnk) { Remove-Item $lnk -Force }
+  Clear-SourceMode
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if ($userPath) {
     $parts = $userPath.Split(';') | Where-Object { $_ -and ($_.TrimEnd('\') -ne $AppDir.TrimEnd('\')) }
@@ -275,7 +415,9 @@ Qball 命令行工具
   qball logs [-Tail 50]          查看最近日志(默认 30 行)
   qball open                     打开界面
   qball autostart on|off|status  开机自启
-  qball update                   检查并更新到最新版
+  qball update                   检查并更新(源码模式下 git pull)
+  qball dev-setup [-From 路径]   开启源码模式(自进化前提;默认从 GitHub 克隆)
+  qball devmode on|off           查看/关闭源码模式
   qball uninstall [-Purge]       卸载(-Purge 同时删除配置与数据)
 "@
 }
@@ -295,6 +437,8 @@ switch ($Command.ToLower()) {
     }
   }
   "update" { Invoke-Update }
+  "dev-setup" { Invoke-DevSetup -From $(if ($From) { $From } else { $Arg }) }
+  "devmode" { Invoke-DevMode $Arg }
   "uninstall" { Invoke-Uninstall }
   default { Show-Help }
 }

@@ -38,6 +38,7 @@ async function stream(message, headers) {
   const h = await j(C + '/api/health');
   log(h.status === 200 && h.d.key === false && h.d.auth_required === false,
     'BYOK server: no builtin key, no code', JSON.stringify({ key: h.d.key, auth: h.d.auth_required }));
+  log(h.d.mode === 'source' || h.d.mode === 'exe', 'health reports run mode', h.d.mode);
 
   const m403 = await j(C + '/api/models', {
     method: 'POST',
