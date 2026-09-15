@@ -1,0 +1,8 @@
+{
+  "name": "qball-tests",
+  "private": true,
+  "description": "Qball 自动化测试(语法检查 + API 安全 + 界面/动效/引导)",
+  "devDependencies": {
+    "playwright-core": "^1.55.0"
+  }
+}

@@ -16,3 +16,8 @@ EmotionBall.exe
 
 # logs
 *.log
+
+# tests
+tests/node_modules/
+tests/.runtime/
+tests/artifacts/
