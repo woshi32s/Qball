@@ -48,7 +48,8 @@ jobs:
       - name: Install python deps
         run: pip install -r requirements.txt
       - name: Install test deps
-        run: npm install --prefix tests --no-audit --no-fund
+        working-directory: tests
+        run: npm install --no-audit --no-fund
       - name: Run full test suite
         shell: pwsh
         env:
