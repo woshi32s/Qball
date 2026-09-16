@@ -1230,7 +1230,17 @@
 
   /* ---------- 工具卡片 ---------- */
   .tool-cards { display: flex; flex-direction: column; gap: 6px; margin: 0 0 6px 2px; max-width: 100%; }
-  .tool-card {
+  /* ---------- 产物(交付物)卡片 ---------- */
+  .deliverable-cards { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px; max-width: 100%; }
+  .dlv-card {
+    display: flex; align-items: center; gap: 9px; padding: 7px 10px;
+    border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.05);
+  }
+  .dlv-ico { flex: none; font-size: 15px; }
+  .dlv-main { flex: 1; min-width: 0; }
+  .dlv-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dlv-path { font-size: 11px; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dlv-btns { display: flex; gap: 6px; flex: none; }  .tool-card {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 10px;
     padding: 7px 10px;
@@ -1522,6 +1532,16 @@
         <div class="st-desc">允许小球使用文件 / 命令 / 网页搜索 / 笔记等工具;命令执行前会向你确认。</div>
       </div>
       <label class="switch"><input id="set-tools" type="checkbox" checked><span class="knob"></span></label>
+    </div>
+    <div class="setting-row" id="ws-row" style="display:none">
+      <div>
+        <div class="st-title">工作区</div>
+        <div class="st-desc">小球写出的文件都在这里;消息下方的产物卡片也可一键打开或定位。</div>
+      </div>
+      <div class="evo-btns">
+        <button class="mini-btn" id="ws-open" type="button">打开文件夹</button>
+        <button class="mini-btn" id="ws-copy" type="button">复制路径</button>
+      </div>
     </div>
     <div class="cfg-title" id="sessions-title" style="display:none">历史会话(本机记录)</div>
     <div class="session-list" id="session-list" style="display:none"></div>
@@ -3346,6 +3366,14 @@
         txt.className = 'txt md';
         txt.innerHTML = MiniMD.render(m.content);
         el.appendChild(txt);
+        if (m.deliverables && m.deliverables.length) {
+          var dlv = document.createElement('div');
+          dlv.className = 'deliverable-cards';
+          m.deliverables.forEach(function (d) {
+            dlv.appendChild(buildDeliverableCard(d.path, d.chars));
+          });
+          el.appendChild(dlv);
+        }
         var wrap = document.createElement('div');
         wrap.className = 'msg-row';
         wrap.appendChild(el);
@@ -3415,9 +3443,12 @@
     toolsEl.className = 'tool-cards';
     var txt = document.createElement('span');
     txt.className = 'txt md';
+    var dlvEl = document.createElement('div');
+    dlvEl.className = 'deliverable-cards';
     el.appendChild(dots);
     el.appendChild(toolsEl);
     el.appendChild(txt);
+    el.appendChild(dlvEl);
     var wrap = document.createElement('div');
     wrap.className = 'msg-row';
     wrap.appendChild(el);
@@ -3436,8 +3467,80 @@
     currentBotMsg = {
       el: el, wrap: wrap, dots: dots, txt: txt, dotsGone: false,
       row: row, dot: dot, finalized: false, actions: null,
-      raw: '', think: null, toolsEl: toolsEl
+      raw: '', think: null, toolsEl: toolsEl, deliverablesEl: dlvEl
     };
+  }
+
+  function fmtSize(chars) {
+    var n = Number(chars) || 0;
+    if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+    return n + ' 字';
+  }
+
+  function openArtifact(p, action) {
+    apiFetch('/api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p, action: action })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.error) setStatus(d.error, true);
+      else if (action === 'reveal') setStatus('已在文件夹中定位');
+    }).catch(function () { setStatus('打开失败,请稍后再试', true); });
+  }
+
+  function buildDeliverableCard(path0, chars) {
+    var card = document.createElement('div');
+    card.className = 'dlv-card';
+    card.dataset.path = path0;
+    var ico = document.createElement('span');
+    ico.className = 'dlv-ico';
+    ico.textContent = '📦';
+    var main = document.createElement('div');
+    main.className = 'dlv-main';
+    var nm = document.createElement('div');
+    nm.className = 'dlv-name';
+    nm.textContent = String(path0).split('/').pop();
+    var pth = document.createElement('div');
+    pth.className = 'dlv-path';
+    pth.textContent = '工作区/' + path0 + ' · ' + fmtSize(chars);
+    main.appendChild(nm);
+    main.appendChild(pth);
+    var btns = document.createElement('div');
+    btns.className = 'dlv-btns';
+    var openB = document.createElement('button');
+    openB.type = 'button';
+    openB.className = 'mini-btn';
+    openB.textContent = '打开';
+    openB.addEventListener('click', function () { openArtifact(path0, 'open'); });
+    var revB = document.createElement('button');
+    revB.type = 'button';
+    revB.className = 'mini-btn';
+    revB.textContent = '定位';
+    revB.addEventListener('click', function () { openArtifact(path0, 'reveal'); });
+    btns.appendChild(openB);
+    btns.appendChild(revB);
+    card.appendChild(ico);
+    card.appendChild(main);
+    card.appendChild(btns);
+    return card;
+  }
+
+  function appendDeliverable(ev) {
+    if (!currentBotMsg) appendBotMsg();
+    if (!currentBotMsg.deliverablesEl) return;
+    var path0 = String(ev.path || '');
+    if (!path0) return;
+    var cards = currentBotMsg.deliverablesEl.querySelectorAll('.dlv-card');
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].dataset.path === path0) {
+        var pth = cards[i].querySelector('.dlv-path');
+        if (pth) pth.textContent = '工作区/' + path0 + ' · ' + fmtSize(ev.chars);
+        return;
+      }
+    }
+    currentBotMsg.deliverablesEl.appendChild(buildDeliverableCard(path0, ev.chars));
+    tail.contentChanged();
+    dlog('deliverable ' + path0);
   }
 
   function toolArgSummary(args) {
@@ -3747,7 +3850,9 @@
     apiFetch('/api/sessions/' + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (data) {
       var msgs = ((data && data.messages) || []).filter(function (m) {
         return m && (m.role === 'user' || m.role === 'assistant') && m.content;
-      }).map(function (m) { return { role: m.role, content: m.content }; });
+      }).map(function (m) {
+        return { role: m.role, content: m.content, deliverables: m.deliverables || [] };
+      });
       if (!msgs.length) { setStatus('这个会话是空的'); return; }
       turn += 1;
       if (abortCtl) { abortCtl.abort(); abortCtl = null; }
@@ -3959,6 +4064,7 @@
           toolsRow.style.display = '';
           toolsInput.checked = cfg.tools_enabled !== false;
         }
+        if (wsRow) wsRow.style.display = '';
         loadSessionList();
         loadEvolutionPanel();
       }).catch(function () {
@@ -4101,6 +4207,9 @@
   var autostartInput = document.getElementById('set-autostart');
   var toolsRow = document.getElementById('tools-row');
   var toolsInput = document.getElementById('set-tools');
+  var wsRow = document.getElementById('ws-row');
+  var wsOpenBtn = document.getElementById('ws-open');
+  var wsCopyBtn = document.getElementById('ws-copy');
   var quitEl = document.getElementById('about-quit');
   var appVersion = '';
 
@@ -4151,6 +4260,36 @@
         toolsInput.checked = !enabled;
         setStatus('设置失败,请稍后再试');
       }).then(function () { toolsInput.disabled = false; });
+    });
+  }
+
+  function wsApi(action) {
+    return apiFetch('/api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '.', action: action })
+    }).then(function (r) { return r.json(); });
+  }
+  if (wsOpenBtn) {
+    wsOpenBtn.addEventListener('click', function () {
+      wsApi('open').then(function (d) {
+        if (d && d.error) setStatus(d.error, true);
+        else setStatus('已打开工作区文件夹');
+      }).catch(function () { setStatus('打开失败,请稍后再试', true); });
+    });
+  }
+  if (wsCopyBtn) {
+    wsCopyBtn.addEventListener('click', function () {
+      wsApi('path').then(function (d) {
+        if (!d || !d.path) { setStatus('读取路径失败', true); return; }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(d.path).then(function () {
+            setStatus('已复制: ' + d.path);
+          }).catch(function () { setStatus(d.path); });
+        } else {
+          setStatus(d.path);
+        }
+      }).catch(function () { setStatus('读取路径失败', true); });
     });
   }
 
@@ -4397,9 +4536,11 @@
         });
       } else if (ev.type === 'tool_call') {
         appendToolCard(ev);
-      } else if (ev.type === 'tool_result') {
-        updateToolCard(ev);
-      } else if (ev.type === 'approval_required') {
+        } else if (ev.type === 'tool_result') {
+          updateToolCard(ev);
+        } else if (ev.type === 'deliverable') {
+          appendDeliverable(ev);
+        } else if (ev.type === 'approval_required') {
         showToolApproval(ev);
       } else if (ev.type === 'error') {
         streamError = ev.message || 'stream error';

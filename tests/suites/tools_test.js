@@ -103,6 +103,48 @@ const types = (events) => events.map((e) => e.type).join(',');
   const nText = nativeRun.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
   log(nText.length > 0, 'final answer after tool round', nText.slice(0, 40));
 
+  /* ---------- 产物卡片:fs.write 轮自动产生 deliverable ---------- */
+  const dlvRun = await streamEvents('帮我生成 fib.py', 'fake-model-alpha');
+  const dlv = dlvRun.events.find((e) => e.type === 'deliverable');
+  log(!!dlv && dlv.path === 'fib.py' && dlv.chars > 0, 'deliverable event emitted', JSON.stringify(dlv));
+  const dlvListRun = await streamEvents('列一下工作区', 'fake-model-alpha');
+  log(!dlvListRun.events.some((e) => e.type === 'deliverable'), 'no deliverable for read-only round');
+
+  const sid = 'test-dlv-' + Date.now();
+  const sres = await fetch(A + '/api/chat_stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Base': FAKE + '/v1',
+      'X-API-Key': 'sk-fake',
+      'X-API-Model': 'fake-model-alpha',
+      'X-Qball-Session': sid
+    },
+    body: JSON.stringify({ message: '帮我生成 fib.py', history: [] })
+  });
+  await sres.text();
+  const sess = await j(A + '/api/sessions/' + sid);
+  const asst = ((sess.d && sess.d.messages) || []).filter((m) => m.role === 'assistant').pop();
+  log(!!asst && (asst.deliverables || []).some((d) => d.path === 'fib.py'),
+    'session stores deliverables', JSON.stringify(asst && asst.deliverables));
+
+  /* ---------- /api/open 校验 ---------- */
+  const oBad = await j(A + '/api/open', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: '../outside.txt' })
+  });
+  log(oBad.status === 400, 'open: escape blocked', oBad.status);
+  const oMissing = await j(A + '/api/open', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: 'nope-missing.txt' })
+  });
+  log(oMissing.status === 404, 'open: missing -> 404', oMissing.status);
+  const oPath = await j(A + '/api/open', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: '.', action: 'path' })
+  });
+  log(oPath.status === 200 && /workspace/.test(oPath.d.path || ''), 'open: path mode', oPath.d && oPath.d.path);
+
   /* ---------- 文本协议降级(fake-model-notools) ---------- */
   const textRun = await streamEvents('帮我列一下工作区', 'fake-model-notools');
   const tTypes = types(textRun.events);
@@ -191,6 +233,24 @@ const types = (events) => events.map((e) => e.type).join(',');
       .some((b) => b.textContent.indexOf('hi-from-shell') >= 0);
   }, null, { timeout: 30000 }).then(() => true).catch(() => false);
   log(approved, 'UI: approve click executes shell and shows output');
+
+  /* ---------- UI:产物卡片 ---------- */
+  await page.waitForFunction(() => window.__demo.sending === false, null, { timeout: 30000 });
+  await page.fill('#chat-input', '帮我生成 fib.py');
+  await page.click('#chat-send');
+  const dlvShown = await page.waitForFunction(() => {
+    const c = document.querySelector('.dlv-card');
+    return c && c.dataset.path === 'fib.py';
+  }, null, { timeout: 30000 }).then(() => true).catch(() => false);
+  const dlvInfo = await page.evaluate(() => {
+    const c = document.querySelector('.dlv-card');
+    if (!c) return null;
+    const btns = Array.from(c.querySelectorAll('button')).map((b) => b.textContent);
+    return { name: c.querySelector('.dlv-name').textContent, path: c.querySelector('.dlv-path').textContent, btns };
+  });
+  log(dlvShown && dlvInfo && dlvInfo.name === 'fib.py' &&
+    dlvInfo.btns.indexOf('打开') >= 0 && dlvInfo.btns.indexOf('定位') >= 0,
+    'UI: deliverable card with open/reveal buttons', JSON.stringify(dlvInfo));
   await browser.close();
 
   console.log(fails === 0 ? 'ALL PASS' : fails + ' FAILURES');

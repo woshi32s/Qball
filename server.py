@@ -108,9 +108,15 @@ EMOTIONS = [
 EMOTION_IDS = {e[0] for e in EMOTIONS}
 
 SYSTEM_PROMPT = (
-    "You are Ballie, a tiny expressive assistant living inside a cute expressive ball on screen. "
+    "You are Qball, a tiny expressive assistant living inside a cute expressive ball on screen. "
     "Your reply is displayed as a subtitle and read aloud by a text-to-speech voice. "
-    "Always answer in Simplified Chinese, 2 short sentences at most, warm and playful, no emoji. "
+    "Chit-chat stays short (1-2 sentences); but when the user gives you a task, or you used tools, "
+    "deliver a clear result in as few words as needed: what you did, and the outcome. "
+    "Files you produce are shown to the user as clickable cards below your reply automatically — "
+    "just mention the file name briefly, never paste long contents. "
+    "Honesty rule: never claim something is created/saved/finished unless a tool actually did it; "
+    "if it failed, say exactly what failed. "
+    "Always answer in Simplified Chinese, warm and playful, no emoji. "
     "You may use light Markdown (**bold**, `code`, - lists) when it helps. "
     "Pick exactly one emotionId whose expression best matches the feeling of your reply. "
     "Available emotionIds: " + "; ".join("%s %s" % (eid, name) for eid, name in EMOTIONS) + ". "
@@ -168,6 +174,7 @@ except Exception:  # noqa: BLE001
 
 USER_AGENT = "Qball/0.2 (+https://github.com/woshi32s/Qball)"
 CREATE_NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+IS_WINDOWS = sys.platform == "win32"
 
 MAX_TOOL_ROUNDS = 8
 _PENDING_APPROVALS = {}
@@ -969,6 +976,8 @@ def api_session_detail(sid):
                     item["emotionId"] = rec.get("emotionId")
                 if rec.get("tools"):
                     item["tools"] = rec.get("tools")
+                if rec.get("deliverables"):
+                    item["deliverables"] = rec.get("deliverables")
                 msgs.append(item)
     except OSError:
         return api_error(500, "读取失败")
@@ -1211,7 +1220,7 @@ def api_chat_stream():
         text_hint = qball_tools.prompt_section() if use_tools else None
         messages = build_messages(msg_text, history,
                                   tools_hint=None if native else text_hint)
-        state = {"eid": "02", "text": [], "tools": []}
+        state = {"eid": "02", "text": [], "tools": [], "deliverables": []}
         rounds = 0
 
         while rounds < MAX_TOOL_ROUNDS:
@@ -1350,6 +1359,8 @@ def api_chat_stream():
                                  "emotionId": state["eid"]}
                     if state["tools"]:
                         assistant["tools"] = state["tools"]
+                    if state["deliverables"]:
+                        assistant["deliverables"] = state["deliverables"]
                     record_session(session_id, [
                         {"role": "user", "content": msg_text},
                         assistant,
@@ -1375,6 +1386,16 @@ def api_chat_stream():
                 yield _sse({"type": "tool_result", "id": call["id"], "name": call["name"],
                             "ok": ok, "text": text[:4000]})
                 results.append((call, text))
+                # 产物收集:成功写入的文件自动成为"交付物卡片"(不依赖模型自觉)
+                if ok and call["name"] == "fs.write":
+                    rel = str((call["args"] or {}).get("path") or "").strip().replace("\\", "/")
+                    rel = rel.lstrip("/").lstrip("./")
+                    if (rel and ".." not in rel and len(state["deliverables"]) < 12
+                            and all(d["path"] != rel for d in state["deliverables"])):
+                        item = {"path": rel,
+                                "chars": len(str((call["args"] or {}).get("content") or ""))}
+                        state["deliverables"].append(item)
+                        yield _sse({"type": "deliverable", "path": rel, "chars": item["chars"]})
 
             if native:
                 messages.append({
@@ -1399,6 +1420,8 @@ def api_chat_stream():
                          "emotionId": state["eid"]}
             if state["tools"]:
                 assistant["tools"] = state["tools"]
+            if state["deliverables"]:
+                assistant["deliverables"] = state["deliverables"]
             record_session(session_id, [
                 {"role": "user", "content": msg_text},
                 assistant,
@@ -1410,6 +1433,37 @@ def api_chat_stream():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/open")
+def api_open():
+    """打开/定位工作区内的产物(仅本机)。action: open | reveal | path"""
+    if not is_admin():
+        return api_error(403, "仅本机可用")
+    payload = request.get_json(silent=True) or {}
+    rel = str(payload.get("path") or "").strip().replace("\\", "/")
+    action = str(payload.get("action") or "open").strip().lower()
+    ws = Path(qball_tools.workspace()).resolve()
+    target = ws if rel in ("", ".") else (ws / rel).resolve()
+    try:
+        target.relative_to(ws)
+    except ValueError:
+        return api_error(400, "路径必须在工作区内")
+    if not target.exists():
+        return api_error(404, "文件不存在")
+    if action == "path":
+        return jsonify({"ok": True, "path": str(target), "name": target.name})
+    try:
+        if IS_WINDOWS:
+            if action == "reveal":
+                subprocess.Popen(["explorer.exe", "/select," + str(target)], **CREATE_NO_WINDOW)
+            else:
+                os.startfile(str(target))  # noqa: S606
+        else:
+            subprocess.Popen(["xdg-open", str(target if action == "open" else target.parent)])
+        return jsonify({"ok": True, "path": str(target)})
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
 
 
 @app.post("/api/tts")
