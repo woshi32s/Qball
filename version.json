@@ -1,10 +1,10 @@
 {
-  "version": "0.2.0",
-  "url": "https://github.com/woshi32s/Qball/releases/download/v0.2.0/Qball.exe",
-  "sha256": "2799d8e01ef0441d74c6fa19f5e481887ab86d91ee74d2bc1d71043d187aa630",
+  "version": "0.3.0",
+  "url": "https://github.com/woshi32s/Qball/releases/download/v0.3.0/Qball.exe",
+  "sha256": "67c84e355df74364d18c6686cdca710a6bc71d6545f56e5df29f1766585163de",
   "mirrors": [
-    "https://ghproxy.net/https://github.com/woshi32s/Qball/releases/download/v0.2.0/Qball.exe",
-    "https://gh-proxy.com/https://github.com/woshi32s/Qball/releases/download/v0.2.0/Qball.exe"
+    "https://ghproxy.net/https://github.com/woshi32s/Qball/releases/download/v0.3.0/Qball.exe",
+    "https://gh-proxy.com/https://github.com/woshi32s/Qball/releases/download/v0.3.0/Qball.exe"
   ],
-  "notes": "首个本机安装版:单文件 EXE、qball 命令、开机自启、检查更新"
+  "notes": "小版本更新:安装器与 qball update 会自动拉取本版本"
 }
