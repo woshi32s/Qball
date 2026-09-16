@@ -77,18 +77,28 @@ function Start-Hidden($cmdline) {
 
 $pids = @()
 
-# 1) 假模型服务
-$kitCmd = "cmd /c cd /d `"$app`" && python `"$Kit`" > `"$Runtime\kit.log`" 2>&1"
-Write-Host "[fixtures] kit cmd: $kitCmd"
+# 1) 假模型服务(端口动态选择:8484 起,被占用则顺延 —— 避免与系统出网连接撞端口)
+function Find-FreePort([int]$Start = 8484, [int]$End = 8494) {
+  for ($p = $Start; $p -le $End; $p++) {
+    $busy = netstat -ano | Select-String (":" + $p + "\s")
+    if (-not $busy) { return $p }
+  }
+  throw "no free port in $Start-$End"
+}
+$kitPort = Find-FreePort
+$kitBase = "http://127.0.0.1:$kitPort/v1"
+$env:EB_FAKE = "http://127.0.0.1:$kitPort"
+Write-Host "[fixtures] fake kit port: $kitPort"
+$kitCmd = "cmd /c cd /d `"$app`" && set PORT=$kitPort&& python `"$Kit`" > `"$Runtime\kit.log`" 2>&1"
 $kitPid = Start-Hidden $kitCmd
 Write-Host "[fixtures] kit pid: $kitPid"
 $pids += $kitPid
 
-# 2) 三个服务端(端口 / 环境变量与 CI 一致)
+# 2) 三个服务端(端口 / 环境变量与 CI 一致;上游指向动态 kit 端口)
 $variantDefs = @(
   @{ Name = "c"; Port = 8464; Envs = "set TTS_ENABLED=0&& set DAILY_LLM_LIMIT=1&& set RATE_CHAT_PER_MIN=30"; },
-  @{ Name = "a"; Port = 8462; Envs = "set TTS_ENABLED=0&& set B_AI_BASE=http://127.0.0.1:8484/v1&& set B_AI_KEY=sk-fake&& set B_AI_MODEL=gpt-4o-mini"; },
-  @{ Name = "b"; Port = 8463; Envs = "set TTS_ENABLED=0&& set B_AI_BASE=http://127.0.0.1:8484/v1&& set B_AI_KEY=sk-fake&& set B_AI_MODEL=gpt-4o-mini&& set ACCESS_CODE=testcode123&& set ADMIN_TOKEN=admintoken456&& set RATE_CHAT_PER_MIN=3&& set DAILY_LLM_LIMIT=5"; }
+  @{ Name = "a"; Port = 8462; Envs = "set TTS_ENABLED=0&& set B_AI_BASE=$kitBase&& set B_AI_KEY=sk-fake&& set B_AI_MODEL=gpt-4o-mini"; },
+  @{ Name = "b"; Port = 8463; Envs = "set TTS_ENABLED=0&& set B_AI_BASE=$kitBase&& set B_AI_KEY=sk-fake&& set B_AI_MODEL=gpt-4o-mini&& set ACCESS_CODE=testcode123&& set ADMIN_TOKEN=admintoken456&& set RATE_CHAT_PER_MIN=3&& set DAILY_LLM_LIMIT=5"; }
 )
 foreach ($v in $variantDefs) {
   $homeDir = "$Runtime\home_$($v.Port)"
@@ -102,7 +112,7 @@ $pids | ConvertTo-Json | Set-Content $PidFile -Encoding ascii
 # 3) 等待就绪
 $ok = $true
 foreach ($v in @(
-  @{ Port = 8484; Url = "http://127.0.0.1:8484/v1/models" },
+  @{ Port = $kitPort; Url = "$kitBase/models" },
   @{ Port = 8462; Url = "http://127.0.0.1:8462/api/health" },
   @{ Port = 8463; Url = "http://127.0.0.1:8463/api/health" },
   @{ Port = 8464; Url = "http://127.0.0.1:8464/api/health" })) {

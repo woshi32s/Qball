@@ -46,7 +46,7 @@ except ImportError:
 
 from flask import Flask, Response, jsonify, request, send_file
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 APP_ID = "qball"
 
 if getattr(sys, "frozen", False):

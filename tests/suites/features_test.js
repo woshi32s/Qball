@@ -130,12 +130,12 @@ const OUT = artifacts('features');
     });
     const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
     page.on('pageerror', (e) => console.log('PAGE-EXC', e.message));
-    await page.addInitScript(() => {
+    await page.addInitScript((fakeBase) => {
       try {
         localStorage.setItem('qball.muted', '1');
-        localStorage.setItem('qball.api.v1', JSON.stringify({ base: 'http://127.0.0.1:8484/v1', key: 'sk-fake', model: 'fake-model-alpha' }));
+        localStorage.setItem('qball.api.v1', JSON.stringify({ base: fakeBase, key: 'sk-fake', model: 'fake-model-alpha' }));
       } catch (e) {}
-    });
+    }, FAKE + '/v1');
     await page.goto(B + '/qball.html', { waitUntil: 'load' });
     await page.mouse.click(640, 430);
     await page.waitForTimeout(3000);

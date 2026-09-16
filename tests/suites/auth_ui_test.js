@@ -13,13 +13,13 @@ const FAKE = process.env.EB_FAKE || 'http://127.0.0.1:8484';
   {
     const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
     page.on('pageerror', (e) => console.log('PAGE-EXC', e.message));
-    await page.addInitScript(() => {
+    await page.addInitScript((fakeBase) => {
       try {
         localStorage.setItem('qball.api.v1', JSON.stringify({
-          base: 'http://127.0.0.1:8484/v1', key: 'sk-fake', model: 'fake-model-alpha'
+          base: fakeBase, key: 'sk-fake', model: 'fake-model-alpha'
         }));
       } catch (e) {}
-    });
+    }, FAKE + '/v1');
     // 伪装成远程访客(否则本机回环会被服务端视为管理员,跳过验证码)
     await page.route(B + '/**', (route) => {
       route.continue({ headers: Object.assign({}, route.request().headers(), { 'x-forwarded-for': '198.51.100.77' }) });
