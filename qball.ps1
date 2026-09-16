@@ -382,9 +382,28 @@ function Invoke-DevMode {
   }
 }
 
+function Invoke-Run {
+  param([string]$Task)
+  if (-not $Task) { Write-Tip '用法: qball run "任务描述"(非交互执行,完成后打印结果与产物)'; return }
+  $port = Get-QballPort
+  if (-not $port) { Write-Bad "Qball 未在运行(先 qball start)"; exit 1 }
+  Write-Tip "任务执行中(可能需要几分钟,请稍候)…"
+  $body = @{ task = $Task } | ConvertTo-Json -Compress
+  try {
+    $r = Invoke-RestMethod "http://127.0.0.1:$port/api/run" -Method Post `
+      -ContentType "application/json; charset=utf-8" `
+      -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 3600
+  } catch {
+    Write-Bad ("执行失败: " + $_.Exception.Message)
+    exit 1
+  }
+  if ($r.text) { Write-Host ""; Write-Host $r.text }
+  if ($r.deliverables -and $r.deliverables.Count -gt 0) { Write-Ok ("产物: " + ($r.deliverables -join "、")) }
+  if ($r.tools -and $r.tools.Count -gt 0) { Write-Tip ("工具调用: " + ($r.tools -join "、")) }
+}
+
 function Invoke-Evolve {
-  param([string]$Action = "status")
-  if (($Action + '').ToLower() -eq "ideas") {
+  param([string]$Action = "status")  if (($Action + '').ToLower() -eq "ideas") {
     $f = Join-Path $HOME ".qball\evolution\reports\ux-ideas.md"
     if (Test-Path -LiteralPath $f) {
       Get-Content -LiteralPath $f -Encoding UTF8 -TotalCount 80 | ForEach-Object { Write-Host $_ }
@@ -461,6 +480,7 @@ Qball 命令行工具
   qball update                   检查并更新(源码模式下 git pull)
   qball dev-setup [-From 路径]   开启源码模式(自进化前提;默认从 GitHub 克隆)
   qball devmode on|off           查看/关闭源码模式
+  qball run "任务描述"           非交互执行一个任务(结果与产物直接打印;脚本化用)
   qball evolve [子命令]          自我进化:status|start|stop|pause|resume|once|revert|ideas
   qball uninstall [-Purge]       卸载(-Purge 同时删除配置与数据)
 "@
@@ -484,6 +504,7 @@ switch ($Command.ToLower()) {
   "dev-setup" { Invoke-DevSetup -From $(if ($From) { $From } else { $Arg }) }
   "devmode" { Invoke-DevMode $Arg }
   "evolve" { Invoke-Evolve $Arg }
+  "run" { Invoke-Run $Arg }
   "uninstall" { Invoke-Uninstall }
   default { Show-Help }
 }

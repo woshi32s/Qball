@@ -47,6 +47,7 @@ New-Item -ItemType Directory -Path "$Runtime\app" -Force | Out-Null
 $app = Join-Path $Runtime "app"
 Copy-Item (Join-Path $AppRoot "server.py") $app -Force
 Copy-Item (Join-Path $AppRoot "qball_tools.py") $app -Force
+Copy-Item (Join-Path $AppRoot "qball_mcp.py") $app -Force
 Copy-Item (Join-Path $AppRoot "evolution.py") $app -Force
 Copy-Item (Join-Path $AppRoot "README.md") $app -Force
 Copy-Item (Join-Path $AppRoot "qball.html") $app -Force

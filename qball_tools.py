@@ -17,6 +17,11 @@ from pathlib import Path
 
 _NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
 
+try:
+    import qball_mcp
+except Exception:  # noqa: BLE001
+    qball_mcp = None
+
 STATE_DIR = Path.home() / ".qball"
 
 
@@ -442,16 +447,40 @@ TOOLS = {
 
 
 def all_specs():
-    return [entry["spec"] for entry in TOOLS.values()]
+    specs = [entry["spec"] for entry in TOOLS.values()]
+    if qball_mcp is not None:
+        try:
+            for spec in qball_mcp.specs(STATE_DIR):
+                specs.append({"name": spec["name"], "description": spec["description"],
+                              "parameters": spec["parameters"]})
+        except Exception:  # noqa: BLE001
+            pass
+    return specs
 
 
 def needs_approval(name):
+    if str(name).startswith("mcp."):
+        if qball_mcp is None:
+            return True
+        try:
+            return qball_mcp.needs_approval(STATE_DIR, name)
+        except Exception:  # noqa: BLE001
+            return True
     entry = TOOLS.get(name)
     return bool(entry and entry["approval"])
 
 
 def run(name, args):
     """执行工具,返回 (ok, text)。异常归一为 (False, 错误信息)。"""
+    if str(name).startswith("mcp."):
+        if qball_mcp is None:
+            return False, "MCP 支持不可用"
+        if not isinstance(args, dict):
+            args = {}
+        try:
+            return qball_mcp.run(STATE_DIR, name, args)
+        except Exception as exc:  # noqa: BLE001
+            return False, "MCP 调用出错: %s" % exc
     entry = TOOLS.get(name)
     if not entry:
         return False, "未知工具: %s" % name
@@ -472,6 +501,13 @@ def prompt_section():
         params = ",".join(spec["parameters"]["properties"].keys()) or "-"
         lines.append("- %s(%s): %s%s" % (spec["name"], params, spec["description"],
                                          "(需用户批准)" if entry["approval"] else ""))
+    if qball_mcp is not None:
+        try:
+            for spec in qball_mcp.specs(STATE_DIR):
+                params = ",".join((spec["parameters"].get("properties") or {}).keys()) or "-"
+                lines.append("- %s(%s): %s(需用户批准)" % (spec["name"], params, spec["description"]))
+        except Exception:  # noqa: BLE001
+            pass
     lines.append('需要调用工具时,在回复 JSON 里增加 action 字段: '
                  '{"emotionId":"30","reply":"我来看看…","action":{"tool":"工具名","args":{...}}}; '
                  '收到「工具结果」后继续推理,最后再给出正常回答(reply 里写真正要说的话)。')

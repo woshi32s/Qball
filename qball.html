@@ -1246,6 +1246,12 @@
   }
   .undo-btn:hover { opacity: 1; }
   .undo-btn:disabled { opacity: 0.45; cursor: default; }
+  .diff-box {
+    margin: 6px 2px 2px; padding: 8px 10px; max-height: 280px; overflow: auto;
+    border: 1px solid var(--line); border-radius: 10px;
+    font-family: Consolas, "Courier New", monospace; font-size: 11px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all; opacity: 0.92;
+  }
   .todo-card {
     position: sticky; top: 4px; z-index: 4; align-self: flex-start;
     border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
@@ -1563,6 +1569,22 @@
       <div class="evo-btns">
         <button class="mini-btn" id="ws-open" type="button">打开文件夹</button>
         <button class="mini-btn" id="ws-copy" type="button">复制路径</button>
+      </div>
+    </div>
+    <div class="setting-row" id="autoshell-row" style="display:none">
+      <div>
+        <div class="st-title">命令自动批准</div>
+        <div class="st-desc">开启后 shell 命令不再逐次询问、直接执行(开启前请确认你知道风险)。</div>
+      </div>
+      <label class="switch"><input id="set-autoshell" type="checkbox"><span class="knob"></span></label>
+    </div>
+    <div class="setting-row" id="mcp-row" style="display:none">
+      <div>
+        <div class="st-title">MCP 扩展</div>
+        <div class="st-desc" id="mcp-desc">读取中…</div>
+      </div>
+      <div class="evo-btns">
+        <button class="mini-btn" id="mcp-reload" type="button">重新加载</button>
       </div>
     </div>
     <div class="cfg-title" id="sessions-title" style="display:none">历史会话(本机记录)</div>
@@ -3402,6 +3424,13 @@
         if (m.checkpoint) {
           var acts = document.createElement('div');
           acts.className = 'msg-actions';
+          var db = document.createElement('button');
+          db.type = 'button';
+          db.className = 'undo-btn';
+          db.textContent = '改动';
+          db.title = '查看这次改动(diff)';
+          db.addEventListener('click', function () { showCheckpointDiff({ el: el, ckpt: m.checkpoint }); });
+          acts.appendChild(db);
           var ub = document.createElement('button');
           ub.type = 'button';
           ub.className = 'undo-btn';
@@ -4018,6 +4047,13 @@
       });
       actions.appendChild(btn);
       if (m.ckpt) {
+        var diffBtn = document.createElement('button');
+        diffBtn.type = 'button';
+        diffBtn.className = 'undo-btn';
+        diffBtn.textContent = '改动';
+        diffBtn.title = '查看这次改动(diff)';
+        diffBtn.addEventListener('click', function () { showCheckpointDiff(m); });
+        actions.appendChild(diffBtn);
         var undoBtn = document.createElement('button');
         undoBtn.type = 'button';
         undoBtn.title = '撤销这次改动(工作区文件还原,对话保留)';
@@ -4030,6 +4066,26 @@
       (m.wrap || m.el).appendChild(actions);
       m.actions = actions;
     }
+  }
+
+  function showCheckpointDiff(m) {
+    if (!m || !m.el) return;
+    var commit = (m.ckpt && m.ckpt.commit) || m.ckpt;
+    if (!commit) return;
+    var existing = m.el.querySelector('.diff-box');
+    if (existing) { existing.remove(); return; }
+    var pre = document.createElement('pre');
+    pre.className = 'diff-box';
+    pre.textContent = '读取 diff…';
+    m.el.appendChild(pre);
+    apiFetch('/api/checkpoints/diff?commit=' + encodeURIComponent(commit))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.error) { pre.textContent = d.error; return; }
+        var text = (d.stat || '') + '\n' + (d.diff || '(无差异)');
+        pre.textContent = text.length > 8000 ? text.slice(0, 8000) + '\n…(已截断)' : text;
+      })
+      .catch(function () { pre.textContent = '读取失败,请稍后再试'; });
   }
 
   function undoCheckpoint(ck, btn) {
@@ -4155,6 +4211,11 @@
           toolsInput.checked = cfg.tools_enabled !== false;
         }
         if (wsRow) wsRow.style.display = '';
+        if (autoshellRow && autoshellInput) {
+          autoshellRow.style.display = '';
+          autoshellInput.checked = cfg.auto_approve_shell === true;
+        }
+        if (mcpRow) { mcpRow.style.display = ''; loadMcpStatus(); }
         loadSessionList();
         loadEvolutionPanel();
       }).catch(function () {
@@ -4300,6 +4361,11 @@
   var wsRow = document.getElementById('ws-row');
   var wsOpenBtn = document.getElementById('ws-open');
   var wsCopyBtn = document.getElementById('ws-copy');
+  var autoshellRow = document.getElementById('autoshell-row');
+  var autoshellInput = document.getElementById('set-autoshell');
+  var mcpRow = document.getElementById('mcp-row');
+  var mcpDescEl = document.getElementById('mcp-desc');
+  var mcpReloadBtn = document.getElementById('mcp-reload');
   var quitEl = document.getElementById('about-quit');
   var appVersion = '';
 
@@ -4359,6 +4425,54 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: '.', action: action })
     }).then(function (r) { return r.json(); });
+  }
+
+  function renderMcpStatus(d) {
+    if (!mcpDescEl) return;
+    if (!d || !d.available) { mcpDescEl.textContent = 'MCP 模块不可用'; return; }
+    var servers = d.servers || [];
+    if (!servers.length) {
+      mcpDescEl.textContent = '未配置。编辑 ' + (d.config || '~/.qball/mcp.json') + ' 添加 MCP 服务器,工具会自动出现在这里。';
+      return;
+    }
+    var lines = servers.map(function (s) {
+      var stat = s.alive ? (s.tools + ' 个工具') : ('离线:' + (s.error || '未启动'));
+      return s.name + '(' + stat + ')';
+    });
+    mcpDescEl.textContent = servers.length + ' 个服务器 · 共 ' + (d.tools || 0) + ' 个工具 — ' + lines.join(' · ');
+  }
+  function loadMcpStatus() {
+    apiFetch('/api/mcp/status').then(function (r) { return r.json(); }).then(renderMcpStatus).catch(function () {});
+  }
+  if (mcpReloadBtn) {
+    mcpReloadBtn.addEventListener('click', function () {
+      mcpReloadBtn.disabled = true;
+      mcpReloadBtn.textContent = '加载中…';
+      apiFetch('/api/mcp/reload', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
+        renderMcpStatus(d);
+        setStatus('MCP 已重新加载');
+      }).catch(function () { setStatus('MCP 加载失败', true); }).then(function () {
+        mcpReloadBtn.disabled = false;
+        mcpReloadBtn.textContent = '重新加载';
+      });
+    });
+  }
+  if (autoshellInput) {
+    autoshellInput.addEventListener('change', function () {
+      var on = autoshellInput.checked;
+      autoshellInput.disabled = true;
+      apiFetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_approve_shell: on })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        autoshellInput.checked = d.auto_approve_shell === true;
+        setStatus(d.auto_approve_shell === true ? '命令将直接执行,不再询问' : '命令执行恢复逐次确认');
+      }).catch(function () {
+        autoshellInput.checked = !on;
+        setStatus('设置失败,请稍后再试', true);
+      }).then(function () { autoshellInput.disabled = false; });
+    });
   }
   if (wsOpenBtn) {
     wsOpenBtn.addEventListener('click', function () {

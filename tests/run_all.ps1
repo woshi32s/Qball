@@ -46,6 +46,7 @@ $suites = @(
   @{ File = "suites\auth_ui_test.js"; Env = @{} },
   @{ File = "suites\cfg_ui_test.js"; Env = @{} },
   @{ File = "suites\tools_test.js"; Env = @{} },
+  @{ File = "suites\mcp_test.js"; Env = @{} },
   @{ File = "suites\sessions_test.js"; Env = @{} },
   @{ File = "suites\evolution_test.js"; Env = @{} },
   @{ File = "suites\onboard2_test.js"; Env = @{} },

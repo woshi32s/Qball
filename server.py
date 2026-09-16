@@ -34,6 +34,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import qball_tools
+try:
+    import qball_mcp
+except Exception:  # noqa: BLE001
+    qball_mcp = None
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 from urllib.request import Request, urlopen
@@ -93,6 +97,7 @@ DEFAULTS = {
     "temperature": 0.8,
     "timeout": 90,
     "tools_enabled": True,
+    "auto_approve_shell": False,
 }
 
 EMOTIONS = [
@@ -315,11 +320,22 @@ def session_msg_count(session_id):
 
 
 def load_project_rules():
-    """分层加载项目规则:全局 ~/.qball/QBALL.md + 工作区 QBALL.md / AGENTS.md。"""
+    """分层加载项目规则:全局(QBALL.md / ~/.agents/AGENTS.md)+ 工作区(QBALL.md / AGENTS.md 含嵌套)。"""
     parts = []
+    ws = Path(qball_tools.workspace())
     cands = [(STATE / "QBALL.md", "全局"),
-             (Path(qball_tools.workspace()) / "QBALL.md", "工作区"),
-             (Path(qball_tools.workspace()) / "AGENTS.md", "工作区 AGENTS")]
+             (Path.home() / ".agents" / "AGENTS.md", "全局 AGENTS"),
+             (ws / "QBALL.md", "工作区")]
+    try:
+        for f in sorted(ws.rglob("AGENTS.md")):
+            rel = f.relative_to(ws)
+            if len(rel.parts) > 3:
+                continue
+            cands.append((f, "工作区 AGENTS" + ("" if len(rel.parts) == 1 else ":" + str(rel.parent).replace("\\", "/"))))
+            if len(cands) > 8:
+                break
+    except OSError:
+        pass
     for path, label in cands:
         try:
             if not path.is_file():
@@ -330,7 +346,7 @@ def load_project_rules():
             parts.append("【项目规则 · %s】\n%s" % (label, text[:2500]))
         except OSError:
             continue
-    return "\n\n".join(parts)
+    return "\n\n".join(parts)[:9000]
 
 
 CKPT_DIR = STATE / "checkpoints.git"
@@ -549,6 +565,8 @@ def update_config(payload):
         CONFIG["model"] = model
     if payload.get("tools_enabled") is not None:
         CONFIG["tools_enabled"] = bool(payload.get("tools_enabled"))
+    if payload.get("auto_approve_shell") is not None:
+        CONFIG["auto_approve_shell"] = bool(payload.get("auto_approve_shell"))
     if not save_config():
         raise RuntimeError("写入 config.json 失败(容器部署请改用环境变量)")
     return CONFIG
@@ -1098,6 +1116,7 @@ def api_config_get():
         "robot": bool(CONFIG.get("robot", True)),
         "key": bool(CONFIG["api_key"]),
         "tools_enabled": bool(CONFIG.get("tools_enabled", True)),
+        "auto_approve_shell": bool(CONFIG.get("auto_approve_shell", False)),
     })
 
 
@@ -1121,6 +1140,7 @@ def api_config_set():
         "robot": bool(CONFIG.get("robot", True)),
         "key": bool(CONFIG["api_key"]),
         "tools_enabled": bool(CONFIG.get("tools_enabled", True)),
+        "auto_approve_shell": bool(CONFIG.get("auto_approve_shell", False)),
     })
 
 
@@ -1672,7 +1692,8 @@ def api_chat_stream():
                     guard = session_write_guard(session_id, call["name"], call["args"])
                 if guard:
                     ok, text = False, guard
-                elif qball_tools.needs_approval(call["name"]) and not auto_approve:
+                elif qball_tools.needs_approval(call["name"]) and not (
+                        auto_approve or (call["name"] == "shell.run" and CONFIG.get("auto_approve_shell"))):
                     approval_id = uuid.uuid4().hex[:12]
                     yield _sse({"type": "approval_required", "id": approval_id,
                                 "name": call["name"], "args": call["args"]})
@@ -1790,6 +1811,27 @@ def api_checkpoints():
     return jsonify({"checkpoints": items})
 
 
+@app.get("/api/checkpoints/diff")
+def api_checkpoints_diff():
+    """某个检查点 → 当前状态的改动(diff + stat),供「查看改动」使用。"""
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    commit = str(request.args.get("commit") or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        return api_error(400, "commit 不合法")
+    try:
+        if not CKPT_DIR.exists():
+            return api_error(400, "还没有任何检查点")
+        stat = _ckpt_git(["diff", "--stat", commit])
+        diff = _ckpt_git(["diff", commit])
+        return jsonify({
+            "stat": stat.stdout.decode("utf-8", "replace")[:2000],
+            "diff": diff.stdout.decode("utf-8", "replace")[:20000],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+
+
 @app.post("/api/checkpoints/restore")
 def api_checkpoints_restore():
     """把工作区还原到某个快照;scope=both 时同时裁掉该轮之后的对话。"""
@@ -1819,6 +1861,87 @@ def api_checkpoints_restore():
                          if l.strip()]
                 path.write_text("\n".join(lines[:keep]) + "\n", encoding="utf-8")
         return jsonify({"ok": True, "scope": scope})
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+
+
+@app.post("/api/run")
+def api_run():
+    """非交互任务模式(qball run / 脚本化):跑完一次性返回结果与产物。"""
+    if not is_admin():
+        return api_error(403, "仅本机可用")
+    payload = request.get_json(silent=True) or {}
+    task = str(payload.get("task") or "").strip()
+    if not task:
+        return api_error(400, "task 为空")
+    body = {"message": task[:MAX_MESSAGE_CHARS_LOCAL], "history": []}
+    if payload.get("plan"):
+        body["mode"] = "plan"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Qball-Session": "run-%d" % int(time.time()),
+    }
+    if payload.get("yolo", True):
+        headers["X-Qball-Auto-Approve"] = "1"
+    req = Request("http://%s/api/chat_stream" % request.host,
+                  data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    text_parts, tools, deliverables, events = [], [], [], []
+    try:
+        with urlopen(req, timeout=3600) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    ev = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                events.append(ev)
+                kind = ev.get("type")
+                if kind == "text":
+                    text_parts.append(ev.get("delta") or "")
+                elif kind == "tool_call":
+                    tools.append(ev.get("name"))
+                elif kind == "deliverable":
+                    deliverables.append(ev.get("path"))
+                elif kind == "done":
+                    break
+    except Exception as exc:  # noqa: BLE001
+        return api_error(502, "执行失败: %s" % exc)
+    out = {"ok": True, "text": "".join(text_parts).strip(),
+           "tools": tools, "deliverables": deliverables}
+    if payload.get("events"):
+        out["events"] = events
+    return jsonify(out)
+
+
+@app.get("/api/mcp/status")
+def api_mcp_status():
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    if qball_mcp is None:
+        return jsonify({"available": False})
+    try:
+        data = qball_mcp.status(STATE)
+        data["available"] = True
+        data["tools"] = len(qball_mcp.specs(STATE))
+        data["config"] = str(qball_mcp.config_path(STATE))
+        return jsonify(data)
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+
+
+@app.post("/api/mcp/reload")
+def api_mcp_reload():
+    if not is_admin():
+        return api_error(403, "仅本机可操作")
+    if qball_mcp is None:
+        return api_error(503, "MCP 模块不可用")
+    try:
+        data = qball_mcp.reload_all(STATE)
+        data["available"] = True
+        data["tools"] = len(qball_mcp.specs(STATE, force=True))
+        return jsonify(data)
     except Exception as exc:  # noqa: BLE001
         return api_error(500, str(exc))
 

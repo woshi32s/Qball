@@ -46,6 +46,7 @@ LAST_HEADERS = {}
 TOOL_TRIGGERS = [
     ("列一下工作区", "fs.list", {"path": "."}),
     ("跑一条命令", "shell.run", {"command": "echo hi-from-shell"}),
+    ("调用 echo 工具", "mcp.fake.echo", {"text": "hello-mcp"}),
     ("evo-hello.txt", "fs.write", {"path": "evo-hello.txt", "content": "hi from qball\n"}),
     ("读一下 fib.py", "fs.read", {"path": "fib.py"}),
     ("改一下 fib.py", "fs.edit", {"path": "fib.py", "find": "print(a)", "replace": "print(a, end=' ')"}),
