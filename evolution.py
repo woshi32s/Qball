@@ -606,6 +606,28 @@ def _norm_idea(text):
     return re.sub(r"[\s\W_]+", "", str(text or "")).lower()[:80]
 
 
+def nudge_missing_artifact(state_dir, cfg, server, gen, task, transcript):
+    """ux 任务没真写出 ux-ideas.md 时,在同一会话里追一条硬提醒并合并记录。"""
+    if task.get("kind") != "ux":
+        return False
+    art = Path(state_dir) / "workspace" / "ux-ideas.md"
+    try:
+        if art.exists() and art.stat().st_size >= 20:
+            return False
+    except OSError:
+        pass
+    try:
+        extra = server.chat_stream(
+            "你没有真正把建议写进文件。现在立刻调用 fs.write 工具,把建议写入工作区文件 ux-ideas.md:"
+            "每条一行,用 | 分隔 5 列(标题|用户痛点|具体做法|涉及文件|验收标准);写完只回复 OK。",
+            cfg["executor_model"], "evo-gen-%d" % gen, timeout=300)
+    except Exception:  # noqa: BLE001
+        return False
+    transcript["text"] = ((transcript.get("text") or "") + "\n" + (extra.get("text") or "")).strip()
+    transcript["tools"] = (transcript.get("tools") or []) + (extra.get("tools") or [])
+    return True
+
+
 def harvest_ux_ideas(state_dir, gen, score, transcript):
     """把体验任务的产出收集到报告 reports/ux-ideas.md(去重)。返回新增条数。"""
     p = paths(state_dir)
@@ -1130,6 +1152,12 @@ def run_generation(state_dir, cfg=None, server=None):
         result["error"] = "执行失败: %s" % transcript["error"]
     track("execute", cfg["executor_model"], transcript.get("text", ""))
     step("execute", "tools=%d text=%d" % (len(transcript.get("tools") or []), len(transcript.get("text") or "")))
+    if task.get("kind") == "ux":
+        try:
+            if nudge_missing_artifact(state_dir, cfg, server, gen, task, transcript):
+                step("nudge", "未写出 ux-ideas.md,已催促补写")
+        except Exception as exc:  # noqa: BLE001
+            step("nudge", "失败: %s" % str(exc)[:80])
     _write_json(gen_dir / "transcript.json", transcript)
 
     # 2) 评审

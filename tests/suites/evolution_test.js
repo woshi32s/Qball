@@ -169,16 +169,31 @@ function writeCfg(cfg) {
     'report = E.paths(state)["root"] / "reports" / "ux-ideas.md"',
     'txt = report.read_text(encoding="utf-8") if report.exists() else ""',
     'notify_off = E.notify_desktop(cfg, "t", "m")',
+    'class StubSrv:',
+    '    calls = 0',
+    '    def chat_stream(self, prompt, model, sid, timeout=600):',
+    '        StubSrv.calls += 1',
+    '        (ws / "ux-ideas.md").write_text("- 补写按钮 | 痛点X | 做法Y | qball.html | 能点\\n", encoding="utf-8")',
+    '        return {"text": "OK", "tools": [{"name": "fs.write", "ok": True, "text": ""}]}',
+    '(ws / "ux-ideas.md").unlink()',
+    'tr = {"text": "", "tools": []}',
+    'did1 = E.nudge_missing_artifact(state, {"executor_model": "m"}, StubSrv(), 98, {"kind": "ux"}, tr)',
+    'did2 = E.nudge_missing_artifact(state, {"executor_model": "m"}, StubSrv(), 98, {"kind": "ux"}, tr)',
+    'did3 = E.nudge_missing_artifact(state, {"executor_model": "m"}, StubSrv(), 98, {"kind": "verify"}, tr)',
     'print(json.dumps({"digest": len(digest), "has_tool": "fs.write" in digest,',
     '                  "has_ui": "界面按钮" in digest, "n1": n1, "n2": n2,',
     '                  "has_a": "测试按钮A" in txt, "has_b": "测试按钮B" in txt,',
-    '                  "header": "体验改进报告" in txt, "notify_off": notify_off}))',
+    '                  "header": "体验改进报告" in txt, "notify_off": notify_off,',
+    '                  "nudge": [did1, did2, did3, StubSrv.calls, [t["name"] for t in tr["tools"]]]}))',
   ].join('\n'), 'utf8');
   const probe = JSON.parse(execSync('python "' + probeFile + '"', { encoding: 'utf8' }));
   log(probe.has_tool && probe.has_ui && probe.digest > 60, 'ui_digest builds feature map', probe.digest);
   log(probe.n1 === 2 && probe.n2 === 0 && probe.has_a && probe.has_b && probe.header,
     'harvest: report written + dedupe', JSON.stringify({ n1: probe.n1, n2: probe.n2 }));
   log(probe.notify_off === false, 'notify disabled -> no-op');
+  log(probe.nudge[0] === true && probe.nudge[1] === false && probe.nudge[2] === false &&
+    probe.nudge[3] === 1 && probe.nudge[4].indexOf('fs.write') >= 0,
+    'nudge: retries once when artifact missing', JSON.stringify(probe.nudge));
 
   const lib = await j(A + '/api/evolution/library');
   log(lib.status === 200 && lib.d.available && Array.isArray(lib.d.skills) && typeof lib.d.ideas === 'string',
