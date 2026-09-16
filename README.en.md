@@ -36,7 +36,12 @@ and **the model weights are never touched**.
 > What improves is the **agent** (rules, skill library, workflow, code).
 
 Every proposed change must pass three gates: **score gate / path allowlist / full test suite** —
-only green changes are auto-adopted (git-versioned, one-click rollback). See **[docs/EVOLUTION.md](docs/EVOLUTION.md)** (Chinese).
+only green changes are auto-adopted (git-versioned, one-click rollback).
+
+It also reviews itself **from the user's point of view**: tiny UX tweaks (buttons, copy) it applies on
+its own, while bigger ideas go into a "UX improvement report" for the developer assistant; adoptions and
+new ideas raise Windows notifications, and the settings panel lets you browse its skill library and the report.
+See **[docs/EVOLUTION.md](docs/EVOLUTION.md)** (Chinese).
 
 ## Install (Windows)
 

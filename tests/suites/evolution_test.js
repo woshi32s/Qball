@@ -39,6 +39,7 @@ function writeCfg(cfg) {
 (async () => {
   const cfg = {
     enabled: false,
+    notify_desktop: false,
     executor_model: 'fake-model-alpha',
     judge_model: 'fake-model-alpha',
     shadow_generations: 20,
@@ -143,6 +144,50 @@ function writeCfg(cfg) {
   log(models.status === 200 && st2.d.executor_model === 'fake-model-beta', 'set_models works', st2.d.executor_model);
   await control('set_models', { executor_model: 'fake-model-alpha' });
 
+  /* ---------- 体验改进通道:ux 任务 + 功能地图 + 报告收集 + 通知开关 ---------- */
+  const allTasks = fs.readdirSync(path.join(EVO, 'bench', 'tasks'))
+    .map((f) => JSON.parse(fs.readFileSync(path.join(EVO, 'bench', 'tasks', f), 'utf8')));
+  const uxSeed = allTasks.find((t) => t.id === 'seed-ux-firstrun');
+  log(!!uxSeed && uxSeed.kind === 'ux' && allTasks.some((t) => t.id === 'seed-ux-shortcuts'),
+    'ux seed tasks present', allTasks.filter((t) => t.kind === 'ux').map((t) => t.id).join(','));
+
+  const rootDir = path.join(__dirname, '..', '..');
+  const probeFile = path.join(EVO, 'ux_probe.py');
+  fs.writeFileSync(probeFile, [
+    'import sys, json, pathlib',
+    'sys.path.insert(0, r"' + rootDir + '")',
+    'import evolution as E',
+    'cfg = {"_app_dir": r"' + APP_DIR + '", "notify_desktop": False}',
+    'digest = E.ui_digest(cfg)',
+    'state = pathlib.Path(r"' + STATE + '")',
+    'ws = state / "workspace"',
+    'ws.mkdir(parents=True, exist_ok=True)',
+    '(ws / "ux-ideas.md").write_text("- 测试按钮A | 找不到入口 | 加到设置顶部 | qball.html | 点开可见\\n"',
+    '    "- 测试按钮B | 太绕 | 收进菜单 | qball.html | 一次点击\\n", encoding="utf-8")',
+    'n1 = E.harvest_ux_ideas(state, 99, 0.8, {"text": ""})',
+    'n2 = E.harvest_ux_ideas(state, 99, 0.8, {"text": ""})',
+    'report = E.paths(state)["root"] / "reports" / "ux-ideas.md"',
+    'txt = report.read_text(encoding="utf-8") if report.exists() else ""',
+    'notify_off = E.notify_desktop(cfg, "t", "m")',
+    'print(json.dumps({"digest": len(digest), "has_tool": "fs.write" in digest,',
+    '                  "has_ui": "界面按钮" in digest, "n1": n1, "n2": n2,',
+    '                  "has_a": "测试按钮A" in txt, "has_b": "测试按钮B" in txt,',
+    '                  "header": "体验改进报告" in txt, "notify_off": notify_off}))',
+  ].join('\n'), 'utf8');
+  const probe = JSON.parse(execSync('python "' + probeFile + '"', { encoding: 'utf8' }));
+  log(probe.has_tool && probe.has_ui && probe.digest > 60, 'ui_digest builds feature map', probe.digest);
+  log(probe.n1 === 2 && probe.n2 === 0 && probe.has_a && probe.has_b && probe.header,
+    'harvest: report written + dedupe', JSON.stringify({ n1: probe.n1, n2: probe.n2 }));
+  log(probe.notify_off === false, 'notify disabled -> no-op');
+
+  const lib = await j(A + '/api/evolution/library');
+  log(lib.status === 200 && lib.d.available && Array.isArray(lib.d.skills) && typeof lib.d.ideas === 'string',
+    'library api shape', JSON.stringify({ skills: lib.d && lib.d.skills && lib.d.skills.length }));
+  log((lib.d.ideas || '').indexOf('测试按钮A') >= 0, 'library api returns collected ideas');
+  const sn = await control('set_notify', { value: false });
+  log(sn.status === 200 && sn.d.notify_desktop === false, 'set_notify works');
+  await control('set_notify', { value: true });
+
   /* ---------- UI:设置里的自我进化面板 ---------- */
   const { launch } = require('../lib/common');
   const browser = await launch();
@@ -164,9 +209,13 @@ function writeCfg(cfg) {
   const evo = await page.evaluate(() => ({
     title: document.getElementById('evo-title').style.display !== 'none',
     status: document.getElementById('evo-status').textContent,
-    toggle: !!document.getElementById('set-evo')
+    toggle: !!document.getElementById('set-evo'),
+    skillsBtn: !!document.getElementById('evo-skills'),
+    ideasBtn: !!document.getElementById('evo-ideas'),
+    notifyInput: !!document.getElementById('set-evo-notify')
   }));
   log(evo.title && /代/.test(evo.status), 'UI: evolution panel shows status', evo.status.trim().slice(0, 60));
+  log(evo.skillsBtn && evo.ideasBtn && evo.notifyInput, 'UI: library + notify controls exist');
   await browser.close();
 
   console.log(fails === 0 ? 'ALL PASS' : fails + ' FAILURES');

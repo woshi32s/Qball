@@ -1031,6 +1031,50 @@ def api_evolution_status():
             "recent": scores,
             "adopted": st.get("adopted", [])[-5:],
             "last_restart": st.get("last_restart", ""),
+            "notify_desktop": bool(cfg.get("notify_desktop", True)),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+
+
+@app.get("/api/evolution/library")
+def api_evolution_library():
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    if evolution_engine is None:
+        return jsonify({"available": False})
+
+    def _text(path, cap):
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:cap]
+        except OSError:
+            return ""
+
+    try:
+        p = evolution_engine.paths(STATE)
+        skills = []
+        for f in sorted((p["agent"] / "skills").glob("*.md")):
+            text = _text(f, 4000)
+            first = ""
+            for line in text.splitlines():
+                line = line.strip().lstrip("#").strip()
+                if line:
+                    first = line[:80]
+                    break
+            try:
+                mtime = time.strftime("%m-%d %H:%M", time.localtime(f.stat().st_mtime))
+            except OSError:
+                mtime = ""
+            skills.append({"name": f.stem, "chars": len(text), "first": first, "mtime": mtime})
+        st = evolution_engine.load_state(STATE)
+        return jsonify({
+            "available": True,
+            "generation": st.get("generation", 0),
+            "adoptions": len(st.get("adopted") or []),
+            "skills": skills,
+            "addendum": _text(p["agent"] / "system_prompt_addendum.md", 2400),
+            "journal": _text(p["agent"] / "memory" / "journal.md", 3000),
+            "ideas": _text(p["root"] / "reports" / "ux-ideas.md", 16000),
         })
     except Exception as exc:  # noqa: BLE001
         return api_error(500, str(exc))
@@ -1065,6 +1109,10 @@ def api_evolution_control():
         if action == "resume":
             evolution_engine.control_flag(STATE, ".pause").unlink(missing_ok=True)
             return jsonify({"ok": True})
+        if action == "set_notify":
+            cfg["notify_desktop"] = bool(payload.get("value", True))
+            evolution_engine.save_config(STATE, cfg)
+            return jsonify({"ok": True, "notify_desktop": cfg["notify_desktop"]})
         if action == "run_once":
             evolution_engine.control_flag(STATE, ".run_once").touch()
             if not evolution_engine.daemon_pid(STATE):

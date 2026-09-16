@@ -18,6 +18,7 @@
   python evolution.py daemon      # 常驻循环
   python evolution.py once        # 跑一代后退出
   python evolution.py status      # 打印状态
+  python evolution.py ideas       # 查看体验改进报告(ux 任务产出,供开发助手实现)
 """
 import json
 import os
@@ -35,6 +36,7 @@ CREATE_NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
 
 CONFIG_DEFAULTS = {
     "enabled": False,
+    "notify_desktop": True,            # 采纳/体验建议/自动暂停时弹 Windows 气泡通知
     "executor_model": "deepseek-v4.1-flash",
     "judge_model": "deepseek-v4.1-flash",
     "shadow_generations": 20,          # 前 N 代只提案不落地(0 = 直接全自动)
@@ -103,6 +105,35 @@ SEED_TASKS = [
         "kind": "soft",
         "rubric": "评分点:亲切自然(35%)、简短不啰嗦(35%)、体现小球的人格(30%)。",
         "priority": 30,
+    },
+    {
+        "id": "seed-ux-firstrun",
+        "title": "新用户第一印象(体验改进)",
+        "prompt": (
+            "你现在把自己当成第一次打开 Qball 的新用户。浏览下面的功能地图,"
+            "提出 1-3 条让新人立刻明白「它能干什么、下一步点哪」的小改进:"
+            "可以是新增小按钮/小选项、改文案、改摆放位置、加一句引导,不要求发明大型新系统。"
+            "把最终建议写入工作区文件 ux-ideas.md,每条一行,用 | 分隔 5 列,格式严格为:\n"
+            "- 标题 | 用户痛点 | 具体做法 | 涉及文件 | 验收标准"
+        ),
+        "kind": "ux",
+        "rubric": "评分点:条数 1-3 且真实可信(35%)、从新用户视角找痛点(35%)、做法具体到按钮/文案级且给出涉及文件与验收标准(30%)。",
+        "priority": 45,
+    },
+    {
+        "id": "seed-ux-shortcuts",
+        "title": "常用操作减负(体验改进)",
+        "prompt": (
+            "你现在把自己当成长期使用 Qball 的老用户。浏览下面的功能地图,"
+            "找出 3 个「常用但太绕、找不到入口、或点好几下才能完成」的操作"
+            "(例如换模型、看历史会话、管理笔记、开关自我进化、看它学到了什么),"
+            "给出按钮/选项级建议:放在哪里、叫什么名字、点了之后发生什么。"
+            "把最终建议写入工作区文件 ux-ideas.md,每条一行,用 | 分隔 5 列,格式严格为:\n"
+            "- 标题 | 用户痛点 | 具体做法 | 涉及文件 | 验收标准"
+        ),
+        "kind": "ux",
+        "rubric": "评分点:找准真实高频痛点(35%)、方案具体可实施(35%)、不重复已有入口且验收标准可检查(30%)。",
+        "priority": 46,
     },
 ]
 
@@ -221,6 +252,76 @@ def prompt_addendum(state_dir):
     return "\n\n".join(parts)
 
 
+def ui_digest(cfg, limit=1400):
+    """给体验类任务自动生成"功能地图":工具清单 + 界面按钮/标题 + 接口一览。"""
+    app = Path(cfg.get("_app_dir") or ".")
+    parts = []
+    try:
+        src = (app / "qball_tools.py").read_text(encoding="utf-8", errors="replace")
+        names = re.findall(r'_spec\(\s*"([a-z_]+\.[a-z_]+)"\s*,\s*"([^"]{0,40})', src)
+        if names:
+            parts.append("内置工具: " + "、".join("%s(%s)" % (n, d) for n, d in names[:14]))
+    except OSError:
+        pass
+    try:
+        html = (app / "qball.html").read_text(encoding="utf-8", errors="replace")
+        labels = []
+        for m in re.finditer(r'<button[^>]*>([^<>]{1,24})</button>', html):
+            b = m.group(1).strip()
+            if b and b not in labels:
+                labels.append(b)
+        for m in re.finditer(r'class="(?:cfg-title|st-title)"[^>]*>([^<>]{1,24})<', html):
+            t = m.group(1).strip()
+            if t and t not in labels:
+                labels.append(t)
+        if labels:
+            parts.append("界面按钮/标题: " + "、".join(labels[:30]))
+    except OSError:
+        pass
+    try:
+        srv = (app / "server.py").read_text(encoding="utf-8", errors="replace")
+        eps = []
+        for m in re.finditer(r'@app\.(?:get|post)\("(/api/[a-z_/]+)"\)', srv):
+            if m.group(1) not in eps:
+                eps.append(m.group(1))
+        if eps:
+            parts.append("接口: " + "、".join(eps[:20]))
+    except OSError:
+        pass
+    return "\n".join(parts)[:limit]
+
+
+def _ps_quote(s):
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def notify_desktop(cfg, title, message):
+    """Windows 气泡通知(隐藏窗口,不抢焦点);失败静默,绝不打断进化。"""
+    if not IS_WINDOWS or not (cfg or {}).get("notify_desktop", True):
+        return False
+    title = re.sub(r"[\r\n]+", " ", str(title or "")).strip()[:60]
+    message = re.sub(r"[\r\n]+", " ", str(message or "")).strip()[:220]
+    if not message:
+        return False
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "Add-Type -AssemblyName System.Drawing;"
+        "$n=New-Object System.Windows.Forms.NotifyIcon;"
+        "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
+        "$n.ShowBalloonTip(9000,%s,%s,[System.Windows.Forms.ToolTipIcon]::Info);"
+        "Start-Sleep -Seconds 10;$n.Dispose()"
+        % (_ps_quote(title), _ps_quote(message))
+    )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            **CREATE_NO_WINDOW)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ---------------------------------------------------------------- 初始化
 
 def init_workspace(state_dir):
@@ -241,8 +342,12 @@ def init_workspace(state_dir):
         save_config(state_dir, CONFIG_DEFAULTS)
 
     tasks = bench_tasks(state_dir)
-    if not tasks:
-        for task in SEED_TASKS:
+    retired_dir0 = p["root"] / "bench" / "retired"
+    retired_ids = {f.stem for f in retired_dir0.glob("*.json")} if retired_dir0.exists() else set()
+    existing_ids = {t["id"] for t in tasks}
+    for task in SEED_TASKS:
+        # 补种:新增的种子任务自动入库(从未建过、也未被退休过的)
+        if task["id"] not in existing_ids and task["id"] not in retired_ids:
             save_task(state_dir, task)
 
     # agent 产物自身的版本库(只版本化 agent/ 等产出,状态文件不进库,避免回滚冲突)
@@ -350,7 +455,7 @@ def pick_task(state_dir):
 
     def target_of(t):
         kind = t.get("kind") or last_kind.get(t["id"])
-        return 1.0 if kind != "soft" else soft_target
+        return 1.0 if kind not in ("soft", "ux") else soft_target
 
     pending = [t for t in candidates if last_scores.get(t["id"], -1) < target_of(t)]
     pool = pending or candidates
@@ -486,6 +591,71 @@ def judge_task(state_dir, cfg, server, task, transcript):
     return 0.0, "评审输出无法解析"
 
 
+# ---------------------------------------------------------------- 体验改进通道
+
+UX_RUBRIC_DEFAULT = ("评分点:是否给出 1-3 条具体可实施的体验改进(40%)、"
+                     "是否从真实用户视角找痛点(30%)、涉及文件与验收标准是否明确(30%)。")
+UX_REPORT_TITLE = (
+    "# Qball 体验改进报告(自我进化引擎自动生成)\n\n"
+    "> 每条 = 一个待办,由体验类任务从用户视角提出;开发助手实现后在 [ ] 里打 x。"
+    "查看: `qball evolve ideas` 或设置面板 → 自我进化 → 体验建议。\n"
+)
+
+
+def _norm_idea(text):
+    return re.sub(r"[\s\W_]+", "", str(text or "")).lower()[:80]
+
+
+def harvest_ux_ideas(state_dir, gen, score, transcript):
+    """把体验任务的产出收集到报告 reports/ux-ideas.md(去重)。返回新增条数。"""
+    p = paths(state_dir)
+    raw = ""
+    try:
+        f = Path(state_dir) / "workspace" / "ux-ideas.md"
+        if f.exists():
+            raw = f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        raw = ""
+    if not raw.strip():
+        raw = str((transcript or {}).get("text") or "")
+    ideas = []
+    for line in raw.splitlines():
+        line = line.strip().lstrip("-*• \t").strip()
+        if "|" not in line:
+            continue
+        cols = [c.strip() for c in line.split("|")]
+        if len(cols) < 3 or not cols[0] or len(cols[0]) > 80:
+            continue
+        ideas.append(tuple((cols + [""] * 5)[:5]))
+        if len(ideas) >= 3:
+            break
+    if not ideas:
+        return 0
+    report = p["root"] / "reports" / "ux-ideas.md"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    old = report.read_text(encoding="utf-8", errors="replace") if report.exists() else ""
+    known = {_norm_idea(m.group(1)) for m in re.finditer(r"-\s*\[[ xX]\]\s*\*\*([^*]+)\*\*", old)}
+    fresh = [i for i in ideas if _norm_idea(i[0]) not in known]
+    if not fresh:
+        return 0
+    lines = []
+    if not old.strip():
+        lines.append(UX_REPORT_TITLE)
+    lines.append("\n## gen %d · %s · 评分 %.2f" % (gen, now(), float(score or 0)))
+    for title, pain, how, files, accept in fresh:
+        line = "- [ ] **%s** — %s" % (title[:60], (how or "(做法待补充)")[:90])
+        if files:
+            line += "〔涉及: %s〕" % files[:60]
+        if pain:
+            line += "〔痛点: %s〕" % pain[:80]
+        if accept:
+            line += "〔验收: %s〕" % accept[:80]
+        lines.append(line)
+    with report.open("a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return len(fresh)
+
+
 # ---------------------------------------------------------------- 反思与提案
 
 REFLECT_PROMPT = (
@@ -503,6 +673,7 @@ PROPOSE_PROMPT = (
     '"code_target": "<可选:要修改的代码文件相对路径,没有则 null>",'
     '"summary": "<一句话说明>"}\n'
     "约束:scaffold 里只放你认为能提升表现的小改动(比如追加一条经验到 agent/system_prompt_addendum.md 或新增一个技能文件 agent/skills/xx.md);"
+    "若这次反思涉及明确的界面体验改进(按钮/选项/文案/摆放)且改动很小,可把 code_target 指向 qball.html 等界面文件尝试落地;"
     "如果没有把握就给出空 scaffold 并把 code_target 设为 null。"
 )
 
@@ -518,11 +689,14 @@ TASK_GEN_PROMPT = (
     "请设计一个新任务,用来锻炼 Qball 的实用能力(文件整理 / 写小脚本 / 查资料并总结 / 写作 / 数据收拾等),"
     "难度循序渐进、不要重复上面的任务。只输出 JSON:\n"
     '{"title": "<短标题>", "prompt": "<给执行者的完整中文指令,具体、可独立完成>", '
-    '"kind": "verify" 或 "soft", '
+    '"kind": "verify" 或 "soft" 或 "ux", '
     '"verify": {"type": "file_contains", "path": "<工作区内文件>", "text": "<必须包含的文字>"} '
     '或 {"type": "shell", "command": "<工作区内可运行的命令>", "expect_contains": "<输出中应出现的内容>"}, '
-    '"rubric": "<kind=soft 时的评分点>"}\n'
-    "约束:验收必须能在工作区内自动判定;不要涉及删除文件、下载大文件、系统级操作;prompt 不超过 300 字。"
+    '"rubric": "<kind=soft 或 ux 时的评分点>"}\n'
+    "约束:verify 类验收必须能在工作区内自动判定;soft/ux 类用 rubric 由评委打分。"
+    "ux = 体验改进任务:prompt 让执行者从用户视角给 Qball 提 1-3 条按钮/选项/文案级改进,"
+    "并逐行按「标题 | 痛点 | 做法 | 涉及文件 | 验收标准」写入 ux-ideas.md。"
+    "不要涉及删除文件、下载大文件、系统级操作;prompt 不超过 300 字。"
 )
 
 CONSOLIDATE_PROMPT = (
@@ -552,6 +726,9 @@ def validate_new_task(obj, existing_titles):
     if kind == "soft":
         task["kind"] = "soft"
         task["rubric"] = str(obj.get("rubric") or "评分点:完成度、表达质量、效率。")[:500]
+    elif kind == "ux":
+        task["kind"] = "ux"
+        task["rubric"] = str(obj.get("rubric") or UX_RUBRIC_DEFAULT)[:500]
     else:
         v = obj.get("verify") or {}
         vtype = str(v.get("type") or "")
@@ -940,7 +1117,15 @@ def run_generation(state_dir, cfg=None, server=None):
     step("pick-task", task["id"])
 
     # 1) 执行
-    transcript = server.chat_stream(task["prompt"], cfg["executor_model"], "evo-gen-%d" % gen)
+    exec_prompt = task["prompt"]
+    if task.get("kind") == "ux":
+        digest = ui_digest(cfg)
+        if digest:
+            exec_prompt = (
+                "%s\n\n【当前功能地图(自动生成;提改进时避开已有入口,不要重复)】\n%s\n\n"
+                "收尾必须把最终建议逐行写入工作区文件 ux-ideas.md(每条一行,| 分隔 5 列),否则视为没完成。"
+                % (task["prompt"], digest))
+    transcript = server.chat_stream(exec_prompt, cfg["executor_model"], "evo-gen-%d" % gen)
     if transcript.get("error") and not transcript.get("text"):
         result["error"] = "执行失败: %s" % transcript["error"]
     track("execute", cfg["executor_model"], transcript.get("text", ""))
@@ -948,7 +1133,7 @@ def run_generation(state_dir, cfg=None, server=None):
     _write_json(gen_dir / "transcript.json", transcript)
 
     # 2) 评审
-    if task.get("kind") == "soft":
+    if task.get("kind") in ("soft", "ux"):
         score, reason = judge_task(state_dir, cfg, server, task, transcript)
         track("judge", cfg["judge_model"], reason)
     else:
@@ -957,6 +1142,17 @@ def run_generation(state_dir, cfg=None, server=None):
     result["score"] = score
     result["reason"] = reason
     step("score", "%.2f %s" % (score, reason))
+
+    # 体验改进通道:把建议收进报告(供开发助手实现),并通知用户
+    if task.get("kind") == "ux":
+        try:
+            n_new = harvest_ux_ideas(state_dir, gen, score, transcript)
+            if n_new:
+                step("harvest", "%d 条新体验建议 → reports/ux-ideas.md" % n_new)
+                notify_desktop(cfg, "Qball 进化 · 新体验建议",
+                               "%d 条已写入报告(%s),可在设置面板查看" % (n_new, task.get("title")))
+        except Exception as exc:  # noqa: BLE001
+            step("harvest", "失败: %s" % str(exc)[:80])
 
     # 卡题追踪:连续低分达到上限的任务退休(不再参与轮换)
     fails_map = st.setdefault("task_fails", {})
@@ -1035,6 +1231,7 @@ def run_generation(state_dir, cfg=None, server=None):
                 })
                 st["restart_needed"] = bool(proposal.get("code"))
                 step("adopt", ",".join(changed))
+                notify_desktop(cfg, "Qball 进化 · 已采纳 #%d" % gen, result["proposal_summary"][:200])
             elif changed:
                 git_restore(p["root"], [f for f in changed if f.startswith("agent/")])
                 git_restore(Path(cfg["_app_dir"]), [f for f in changed if not f.startswith("agent/")])
@@ -1155,6 +1352,8 @@ def daemon(state_dir):
                     save_state(state_dir, st)
                     control_flag(state_dir, ".pause").touch()
                     log("too many failures, paused")
+                    notify_desktop(cfg, "Qball 进化 · 已自动暂停",
+                                   "连续失败 %d 次,已暂停;处理后可在面板点「继续」" % failures)
                 elif failures >= 3:
                     log("failures=%d,backoff 15min" % failures)
                     if not _sleep_checked(state_dir, 900):
@@ -1206,6 +1405,12 @@ def main():
             "shadow_generations": cfg.get("shadow_generations"),
             "models": {"executor": cfg.get("executor_model"), "judge": cfg.get("judge_model")},
         }, ensure_ascii=False, indent=2))
+    elif cmd == "ideas":
+        report = paths(state_dir)["root"] / "reports" / "ux-ideas.md"
+        if report.exists():
+            print(report.read_text(encoding="utf-8", errors="replace")[:5000])
+        else:
+            print("还没有体验建议(进化跑过体验类任务后会自动写入 %s)" % report)
     else:
         print(__doc__)
 

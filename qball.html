@@ -1546,6 +1546,24 @@
           <button class="mini-btn" id="evo-revert" type="button">回滚上次</button>
         </div>
       </div>
+      <div class="setting-row" id="evo-extra" style="display:none">
+        <div>
+          <div class="st-title">进化资产</div>
+          <div class="st-desc">看看它学到了什么:技能库、经验文档,以及从用户视角提出的体验改进报告</div>
+        </div>
+        <div class="evo-btns">
+          <button class="mini-btn" id="evo-skills" type="button">技能库</button>
+          <button class="mini-btn" id="evo-ideas" type="button">体验建议</button>
+        </div>
+      </div>
+      <div class="setting-row" id="evo-notify-row" style="display:none">
+        <div>
+          <div class="st-title">桌面通知</div>
+          <div class="st-desc">采纳了新技能 / 收到体验建议 / 自动暂停时,弹一条 Windows 通知</div>
+        </div>
+        <label class="switch"><input id="set-evo-notify" type="checkbox"><span class="knob"></span></label>
+      </div>
+      <div id="evo-library" style="display:none;white-space:pre-wrap;max-height:280px;overflow:auto;margin:4px 2px 10px;font-size:12px;line-height:1.65;border:1px solid var(--line);border-radius:10px;padding:8px 10px"></div>
     </div>
     <div class="cfg-title">模型 · 我的接口(仅存本机)</div>
     <div class="setting-row cfg-col">
@@ -3534,13 +3552,69 @@
   var evoPauseBtn = document.getElementById('evo-pause');
   var evoOnceBtn = document.getElementById('evo-once');
   var evoRevertBtn = document.getElementById('evo-revert');
+  var evoExtra = document.getElementById('evo-extra');
+  var evoSkillsBtn = document.getElementById('evo-skills');
+  var evoIdeasBtn = document.getElementById('evo-ideas');
+  var evoNotifyRow = document.getElementById('evo-notify-row');
+  var evoNotifyInput = document.getElementById('set-evo-notify');
+  var evoLibraryEl = document.getElementById('evo-library');
 
-  function evoControl(action) {
+  function evoControl(action, extra) {
     return apiFetch('/api/evolution/control', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: action })
+      body: JSON.stringify(Object.assign({ action: action }, extra || {}))
     }).then(function (r) { return r.json(); });
+  }
+
+  function evoShowLibrary(text) {
+    if (!evoLibraryEl) return;
+    evoLibraryEl.textContent = text;
+    evoLibraryEl.style.display = '';
+  }
+
+  function evoLoadLibrary(mode) {
+    if (!evoLibraryEl) return;
+    evoShowLibrary('读取中…');
+    apiFetch('/api/evolution/library').then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.available) { evoShowLibrary('进化模块不可用'); return; }
+      if (mode === 'ideas') {
+        evoShowLibrary(d.ideas && d.ideas.trim()
+          ? d.ideas
+          : '(还没有体验建议 — 等进化跑过体验类任务后会自动出现在这里)');
+        return;
+      }
+      var parts = [];
+      if (d.addendum) parts.push('【经验文档(注入系统提示)】\n' + d.addendum);
+      if (d.skills && d.skills.length) {
+        parts.push('【技能库 ' + d.skills.length + ' 个】\n' + d.skills.map(function (s) {
+          return '· ' + s.name + '(' + s.chars + ' 字,' + s.mtime + ')\n  ' + s.first;
+        }).join('\n'));
+      } else {
+        parts.push('【技能库】还没有技能');
+      }
+      if (d.journal) parts.push('【反思日志(尾段)】\n' + d.journal.slice(-900));
+      evoShowLibrary(parts.join('\n\n'));
+    }).catch(function () { evoShowLibrary('读取失败,请稍后再试'); });
+  }
+
+  if (evoSkillsBtn) {
+    evoSkillsBtn.addEventListener('click', function () { evoLoadLibrary('skills'); });
+  }
+  if (evoIdeasBtn) {
+    evoIdeasBtn.addEventListener('click', function () { evoLoadLibrary('ideas'); });
+  }
+  if (evoNotifyInput) {
+    evoNotifyInput.addEventListener('change', function () {
+      var on = evoNotifyInput.checked;
+      evoNotifyInput.disabled = true;
+      evoControl('set_notify', { value: on }).then(function (d) {
+        if (d && d.error) { setStatus(d.error, true); evoNotifyInput.checked = !on; }
+        else { setStatus(on ? '桌面通知已开启' : '桌面通知已关闭'); }
+      }).catch(function () {
+        evoNotifyInput.checked = !on;
+      }).then(function () { evoNotifyInput.disabled = false; });
+    });
   }
 
   function renderEvo(st) {
@@ -3555,6 +3629,11 @@
     evoStatusEl.textContent = line;
     evoInput.checked = !!st.enabled;
     evoActions.style.display = st.enabled ? '' : 'none';
+    if (evoExtra) evoExtra.style.display = st.enabled ? '' : 'none';
+    if (evoNotifyRow) evoNotifyRow.style.display = st.enabled ? '' : 'none';
+    if (evoNotifyInput && document.activeElement !== evoNotifyInput) {
+      evoNotifyInput.checked = st.notify_desktop !== false;
+    }
     evoPauseBtn.textContent = st.paused ? '继续' : '暂停';
     var recent = (st.recent || []).slice(-3).map(function (r) {
       return '#' + r.gen + ' ' + (r.title || r.task) + ' ' + r.score;
