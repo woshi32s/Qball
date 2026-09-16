@@ -47,12 +47,10 @@ jobs:
           generate_release_notes: true
       - name: Update version.json
         shell: pwsh
-        env:
-          PYTHONUTF8: "1"
         run: |
           $ver = "${{ github.ref_name }}".TrimStart("v")
           $sha = (Get-Content dist\Qball.exe.sha256 -Raw).Trim()
-          python scripts/update_version.py $ver "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Qball.exe" $sha "小版本更新:安装器与 qball update 会自动拉取本版本"
+          python scripts/update_version.py $ver "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Qball.exe" $sha
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add version.json
