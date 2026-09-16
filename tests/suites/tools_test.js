@@ -1,6 +1,8 @@
 // 工具框架测试(8462 管理员):工具清单 / 直接执行 / 越界防护 / 原生工具轮 / 文本协议降级 / 审批允许与拒绝 / UI 卡片
 // 运行: node suites/tools_test.js
 const { launch } = require('../lib/common');
+const fs = require('fs');
+const path = require('path');
 const A = process.env.EB_ADMIN || 'http://127.0.0.1:8462';
 const FAKE = process.env.EB_FAKE || 'http://127.0.0.1:8484';
 let fails = 0;
@@ -28,17 +30,18 @@ function runTool(name, args) {
   });
 }
 
-async function streamEvents(message, model, onEvent) {
-  const r = await fetch(A + '/api/chat_stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Base': FAKE + '/v1',
-      'X-API-Key': 'sk-fake',
-      'X-API-Model': model
-    },
-    body: JSON.stringify({ message, history: [] })
-  });
+async function streamEvents(message, model, onEvent, opts) {
+  const o = opts || {};
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-API-Base': FAKE + '/v1',
+    'X-API-Key': 'sk-fake',
+    'X-API-Model': model
+  };
+  if (o.sid) headers['X-Qball-Session'] = o.sid;
+  const body = { message, history: o.history || [] };
+  if (o.mode) body.mode = o.mode;
+  const r = await fetch(A + '/api/chat_stream', { method: 'POST', headers, body: JSON.stringify(body) });
   const reader = r.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
@@ -144,6 +147,89 @@ const types = (events) => events.map((e) => e.type).join(',');
     body: JSON.stringify({ path: '.', action: 'path' })
   });
   log(oPath.status === 200 && /workspace/.test(oPath.d.path || ''), 'open: path mode', oPath.d && oPath.d.path);
+
+  /* ---------- Agent 2.0:fs.edit 基础 ---------- */
+  await runTool('fs.write', { path: 'edit-src.txt', content: 'alpha\nbeta\ngamma\n' });
+  const e0 = await runTool('fs.edit', { path: 'edit-src.txt', find: 'nope-not-here', replace: 'x' });
+  log(e0.d && e0.d.ok === false && /未找到/.test(e0.d.text), 'fs.edit: 0-match rejected', e0.d && e0.d.text.slice(0, 40));
+  const eM = await runTool('fs.edit', { path: 'edit-src.txt', find: 'a', replace: 'A' });
+  log(eM.d && eM.d.ok === false && /不唯一/.test(eM.d.text), 'fs.edit: multi-match rejected', eM.d && eM.d.text.slice(0, 40));
+  const e1 = await runTool('fs.edit', { path: 'edit-src.txt', find: 'beta', replace: 'BETA' });
+  const rdE = await runTool('fs.read', { path: 'edit-src.txt' });
+  log(e1.d && e1.d.ok && /- 原/.test(e1.d.text) && rdE.d.text.indexOf('BETA') >= 0,
+    'fs.edit: unique replace works', e1.d && e1.d.text.slice(0, 60));
+  const seg = await runTool('fs.read', { path: 'edit-src.txt', offset: 2, limit: 1 });
+  log(seg.d && seg.d.ok && seg.d.text.indexOf('BETA') >= 0 && /共 3 行/.test(seg.d.text),
+    'fs.read: offset/limit window', seg.d && seg.d.text.slice(0, 50));
+
+  /* ---------- Agent 2.0:会话防呆(读过但外部已改 → 拒写) ---------- */
+  const sidG = 'guard-' + Date.now();
+  await runTool('fs.write', { path: 'fib.py', content: 'a, b = 0, 1\nfor _ in range(11):\n    print(a)\n    a, b = b, a + b\n' });
+  await streamEvents('读一下 fib.py', 'fake-model-alpha', null, { sid: sidG });
+  await runTool('fs.write', { path: 'fib.py', content: 'a, b = 0, 1\nfor _ in range(11):\n    print(a)\n    a, b = b, a + b\n# external\n' });
+  const blockedRun = await streamEvents('改一下 fib.py', 'fake-model-alpha', null, { sid: sidG });
+  const blockedRes = blockedRun.events.find((e) => e.type === 'tool_result');
+  log(blockedRes && blockedRes.ok === false && /已被其他改动修改/.test(blockedRes.text),
+    'stale guard blocks edit after external change', blockedRes && blockedRes.text.slice(0, 46));
+  await streamEvents('读一下 fib.py', 'fake-model-alpha', null, { sid: sidG });
+  const passRun = await streamEvents('改一下 fib.py', 'fake-model-alpha', null, { sid: sidG });
+  const passRes = passRun.events.find((e) => e.type === 'tool_result');
+  log(passRes && passRes.ok === true, 're-read then edit passes', passRes && passRes.text.slice(0, 40));
+
+  /* ---------- Agent 2.0:待办 ---------- */
+  const sidT = 'todo-' + Date.now();
+  const todoRun = await streamEvents('帮我建个待办', 'fake-model-alpha', null, { sid: sidT });
+  const todoEv = todoRun.events.find((e) => e.type === 'todos');
+  log(!!todoEv && todoEv.items.length === 3 && todoEv.items[1].status === 'in_progress',
+    'todo.write emits todo card data', JSON.stringify(todoEv && todoEv.items[0]));
+
+  /* ---------- Agent 2.0:检查点与撤销 ---------- */
+  const sidC = 'ckpt-' + Date.now();
+  await runTool('fs.write', { path: 'fib.py', content: 'BEFORE_MARKER\n' });
+  const ckRun = await streamEvents('帮我生成 fib.py', 'fake-model-alpha', null, { sid: sidC });
+  const ckEv = ckRun.events.find((e) => e.type === 'checkpoint');
+  const afterWrite = await runTool('fs.read', { path: 'fib.py' });
+  log(!!ckEv && /^[0-9a-f]{7,40}$/.test(ckEv.id || '') && /print\(a\)/.test(afterWrite.d.text),
+    'checkpoint event + write applied', ckEv && ckEv.id.slice(0, 8));
+  const sessC = await j(A + '/api/sessions/' + sidC);
+  const asstC = ((sessC.d && sessC.d.messages) || []).filter((m) => m.role === 'assistant').pop();
+  log(!!asstC && !!asstC.checkpoint && !!asstC.checkpoint.commit, 'session stores checkpoint');
+  const rest = await j(A + '/api/checkpoints/restore', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commit: ckEv && ckEv.id, scope: 'files' })
+  });
+  const afterRestore = await runTool('fs.read', { path: 'fib.py' });
+  log(rest.status === 200 && rest.d.ok && afterRestore.d.text.indexOf('BEFORE_MARKER') >= 0,
+    'checkpoint restore brings files back', afterRestore.d.text.slice(0, 20));
+
+  /* ---------- Agent 2.0:计划模式(只读) ---------- */
+  const planWrite = await streamEvents('帮我生成 fib.py', 'fake-model-alpha', null, { mode: 'plan' });
+  const pwRes = planWrite.events.find((e) => e.type === 'tool_result');
+  log(!!pwRes && pwRes.ok === false && /计划模式/.test(pwRes.text),
+    'plan mode blocks write tools', pwRes && pwRes.text.slice(0, 40));
+  log(!planWrite.events.some((e) => e.type === 'deliverable'), 'plan mode: no deliverable emitted');
+  const planRead = await streamEvents('帮我列一下工作区', 'fake-model-alpha', null, { mode: 'plan' });
+  const prCall = planRead.events.find((e) => e.type === 'tool_call');
+  log(!!prCall && prCall.name === 'fs.list', 'plan mode allows read-only tools', prCall && prCall.name);
+
+  /* ---------- Agent 2.0:项目规则文件注入 ---------- */
+  await runTool('fs.write', { path: 'QBALL.md', content: '# 项目规则\nQBALL_RULE_MARKER 测试标记必须被注入\n' });
+  const ruleRun = await streamEvents('请用一句话回复我', 'fake-model-alpha');
+  const ruleText = ruleRun.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
+  log(ruleText.indexOf('RULE_SEEN') >= 0, 'project rules injected into system', ruleText.slice(0, 30));
+  await runTool('fs.write', { path: 'QBALL.md', content: '' });
+
+  /* ---------- Agent 2.0:上下文自动压缩 ---------- */
+  const sidZ = 'compact-' + Date.now();
+  const bigHistory = [];
+  for (let i = 0; i < 24; i++) {
+    bigHistory.push({ role: i % 2 ? 'assistant' : 'user', content: '历史消息' + i + ' ' + 'x'.repeat(420) });
+  }
+  const cRun = await streamEvents('继续吧', 'fake-model-alpha', null, { sid: sidZ, history: bigHistory });
+  const sessFile = path.join(__dirname, '..', '.runtime', 'home_8462', 'data', 'sessions', sidZ + '.jsonl');
+  const sessText = fs.existsSync(sessFile) ? fs.readFileSync(sessFile, 'utf8') : '';
+  log(/done/.test(types(cRun.events)) && /"role": "summary"/.test(sessText),
+    'long history compressed into summary record', sessText.split('\n').filter((l) => /summary/.test(l)).length);
 
   /* ---------- 文本协议降级(fake-model-notools) ---------- */
   const textRun = await streamEvents('帮我列一下工作区', 'fake-model-notools');
@@ -251,6 +337,30 @@ const types = (events) => events.map((e) => e.type).join(',');
   log(dlvShown && dlvInfo && dlvInfo.name === 'fib.py' &&
     dlvInfo.btns.indexOf('打开') >= 0 && dlvInfo.btns.indexOf('定位') >= 0,
     'UI: deliverable card with open/reveal buttons', JSON.stringify(dlvInfo));
+
+  /* ---------- UI:撤销按钮 / 待办卡片 / 计划开关 ---------- */
+  const undoShown = await page.waitForFunction(() => !!document.querySelector('.undo-btn'), null, { timeout: 20000 })
+    .then(() => true).catch(() => false);
+  log(undoShown, 'UI: undo button rendered for checkpointed turn');
+
+  await page.waitForFunction(() => window.__demo.sending === false, null, { timeout: 30000 });
+  await page.fill('#chat-input', '帮我建个待办');
+  await page.click('#chat-send');
+  const todoShown = await page.waitForFunction(() => {
+    const c = document.getElementById('todo-card');
+    return c && c.querySelectorAll('.todo-item').length === 3;
+  }, null, { timeout: 30000 }).then(() => true).catch(() => false);
+  log(todoShown, 'UI: todo card appears with items');
+
+  const planInfo = await page.evaluate(() => {
+    const b = document.getElementById('chat-plan');
+    if (!b) return null;
+    b.click();
+    const active = b.classList.contains('active');
+    b.click();
+    return { exists: true, toggles: active && !b.classList.contains('active') };
+  });
+  log(planInfo && planInfo.toggles, 'UI: plan toggle switches on/off');
   await browser.close();
 
   console.log(fails === 0 ? 'ALL PASS' : fails + ' FAILURES');

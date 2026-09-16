@@ -1231,8 +1231,7 @@
   /* ---------- 工具卡片 ---------- */
   .tool-cards { display: flex; flex-direction: column; gap: 6px; margin: 0 0 6px 2px; max-width: 100%; }
   /* ---------- 产物(交付物)卡片 ---------- */
-  .deliverable-cards { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px; max-width: 100%; }
-  .dlv-card {
+  .deliverable-cards { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px; max-width: 100%; }  .dlv-card {
     display: flex; align-items: center; gap: 9px; padding: 7px 10px;
     border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.05);
   }
@@ -1240,7 +1239,29 @@
   .dlv-main { flex: 1; min-width: 0; }
   .dlv-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dlv-path { font-size: 11px; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dlv-btns { display: flex; gap: 6px; flex: none; }  .tool-card {
+  .dlv-btns { display: flex; gap: 6px; flex: none; }
+  .undo-btn {
+    border: 1px solid var(--line); background: transparent; color: inherit;
+    font-size: 11px; padding: 3px 9px; border-radius: 8px; cursor: pointer; opacity: 0.8;
+  }
+  .undo-btn:hover { opacity: 1; }
+  .undo-btn:disabled { opacity: 0.45; cursor: default; }
+  .todo-card {
+    position: sticky; top: 4px; z-index: 4; align-self: flex-start;
+    border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
+    margin: 2px 0 8px 2px; background: rgba(18, 18, 22, 0.85);
+    max-width: 430px; font-size: 12px; line-height: 1.55;
+  }
+  .todo-head { font-weight: 600; opacity: 0.75; margin-bottom: 3px; }
+  .todo-item.completed { opacity: 0.55; text-decoration: line-through; }
+  .todo-item.in_progress { color: #9fe0b6; }
+  #chat-plan {
+    flex: none; height: 34px; padding: 0 12px; border: 1px solid var(--line);
+    border-radius: 12px; background: transparent; color: rgba(236, 234, 244, 0.6);
+    font-size: 12px; cursor: pointer; transition: color 0.2s, background 0.2s, border-color 0.2s;
+  }
+  #chat-plan:hover { color: rgba(236, 234, 244, 0.9); }
+  #chat-plan.active { background: rgba(127, 208, 160, 0.22); border-color: #7fd0a0; color: #bff0d2; }  .tool-card {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 10px;
     padding: 7px 10px;
@@ -1391,6 +1412,7 @@
         <line x1="16" y1="9" x2="22" y2="15"></line>
       </svg>
     </button>
+    <button id="chat-plan" type="button" title="计划模式:只读调研并先出计划,不做修改">计划</button>
     <button id="chat-send" type="button" title="发送">
       <span class="ic-enter">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>
@@ -1663,6 +1685,9 @@
   var statusEl = document.getElementById('status');
   var inputEl = document.getElementById('chat-input');
   var sendEl = document.getElementById('chat-send');
+  var planEl = document.getElementById('chat-plan');
+  var planMode = false;
+  var activeSendPlan = false;
   var micEl = document.getElementById('chat-mic');
   var muteEl = document.getElementById('chat-mute');
   var micRingEl = document.getElementById('mic-ring');
@@ -3187,7 +3212,7 @@
     return apiFetch('/api/chat_stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message, history: history }),
+      body: JSON.stringify({ message: message, history: history, mode: activeSendPlan ? 'plan' : '' }),
       signal: signal
     }).then(function (res) {
       if (!res.ok) {
@@ -3374,6 +3399,18 @@
           });
           el.appendChild(dlv);
         }
+        if (m.checkpoint) {
+          var acts = document.createElement('div');
+          acts.className = 'msg-actions';
+          var ub = document.createElement('button');
+          ub.type = 'button';
+          ub.className = 'undo-btn';
+          ub.textContent = '撤销';
+          ub.title = '撤销这次改动(工作区文件还原,对话保留)';
+          ub.addEventListener('click', function () { undoCheckpoint(m.checkpoint, ub); });
+          acts.appendChild(ub);
+          el.appendChild(acts);
+        }
         var wrap = document.createElement('div');
         wrap.className = 'msg-row';
         wrap.appendChild(el);
@@ -3467,7 +3504,7 @@
     currentBotMsg = {
       el: el, wrap: wrap, dots: dots, txt: txt, dotsGone: false,
       row: row, dot: dot, finalized: false, actions: null,
-      raw: '', think: null, toolsEl: toolsEl, deliverablesEl: dlvEl
+      raw: '', think: null, toolsEl: toolsEl, deliverablesEl: dlvEl, ckpt: null
     };
   }
 
@@ -3851,7 +3888,7 @@
       var msgs = ((data && data.messages) || []).filter(function (m) {
         return m && (m.role === 'user' || m.role === 'assistant') && m.content;
       }).map(function (m) {
-        return { role: m.role, content: m.content, deliverables: m.deliverables || [] };
+        return { role: m.role, content: m.content, deliverables: m.deliverables || [], checkpoint: m.checkpoint || null };
       });
       if (!msgs.length) { setStatus('这个会话是空的'); return; }
       turn += 1;
@@ -3980,9 +4017,62 @@
         setTimeout(function () { btn.innerHTML = COPY_SVG; btn.classList.remove('done'); }, 1100);
       });
       actions.appendChild(btn);
+      if (m.ckpt) {
+        var undoBtn = document.createElement('button');
+        undoBtn.type = 'button';
+        undoBtn.title = '撤销这次改动(工作区文件还原,对话保留)';
+        undoBtn.setAttribute('aria-label', '撤销这次改动');
+        undoBtn.textContent = '撤销';
+        undoBtn.className = 'undo-btn';
+        undoBtn.addEventListener('click', function () { undoCheckpoint(m.ckpt, undoBtn); });
+        actions.appendChild(undoBtn);
+      }
       (m.wrap || m.el).appendChild(actions);
       m.actions = actions;
     }
+  }
+
+  function undoCheckpoint(ck, btn) {
+    var commit = (ck && ck.commit) || ck;
+    if (!commit) return;
+    if (!window.confirm('撤销这次改动?\n工作区文件会还原到改动前(对话内容保留)。')) return;
+    apiFetch('/api/checkpoints/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commit: commit, scope: 'files' })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.error) { setStatus(d.error, true); return; }
+      setStatus('已撤销这次改动,文件已还原');
+      if (btn) { btn.disabled = true; btn.textContent = '已撤销'; }
+    }).catch(function () { setStatus('撤销失败,请稍后再试', true); });
+  }
+
+  function renderTodoCard(items) {
+    if (!items || !items.length) {
+      var old = document.getElementById('todo-card');
+      if (old) old.remove();
+      return;
+    }
+    var card = document.getElementById('todo-card');
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'todo-card';
+      card.className = 'todo-card';
+      chatLogEl.appendChild(card);
+    }
+    card.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'todo-head';
+    head.textContent = '待办 · ' + items.filter(function (t) { return t.status === 'completed'; }).length + '/' + items.length;
+    card.appendChild(head);
+    items.forEach(function (t) {
+      var row = document.createElement('div');
+      row.className = 'todo-item ' + (t.status || 'pending');
+      var mark = t.status === 'completed' ? '✓' : (t.status === 'in_progress' ? '▸' : '·');
+      row.textContent = mark + ' ' + (t.content || '');
+      card.appendChild(row);
+    });
+    tail.contentChanged();
   }
 
   function applyMode(instant) {
@@ -4465,6 +4555,9 @@
     var text = inputEl.value.trim();
     if (!text) return;
     skipBoot();
+    var usePlan = planMode;
+    if (usePlan) { planMode = false; updatePlanToggle(); }
+    activeSendPlan = usePlan;
     if (recog && micEl.classList.contains('listening')) { try { recog.stop(); } catch (e) {} }
     var myTurn = ++turn;
     if (abortCtl) abortCtl.abort();
@@ -4538,9 +4631,13 @@
         appendToolCard(ev);
         } else if (ev.type === 'tool_result') {
           updateToolCard(ev);
-        } else if (ev.type === 'deliverable') {
-          appendDeliverable(ev);
-        } else if (ev.type === 'approval_required') {
+      } else if (ev.type === 'deliverable') {
+        appendDeliverable(ev);
+      } else if (ev.type === 'checkpoint') {
+        if (currentBotMsg) currentBotMsg.ckpt = { commit: ev.id, msg_index: 0 };
+      } else if (ev.type === 'todos') {
+        renderTodoCard(ev.items);
+      } else if (ev.type === 'approval_required') {
         showToolApproval(ev);
       } else if (ev.type === 'error') {
         streamError = ev.message || 'stream error';
@@ -4609,6 +4706,21 @@
     if (sending) stopGeneration();
     else sendMessage();
   });
+  function updatePlanToggle() {
+    if (!planEl) return;
+    planEl.classList.toggle('active', planMode);
+    planEl.title = planMode
+      ? '计划模式已开:下一条消息只读调研并先出计划(发送后自动关闭)'
+      : '计划模式:只读调研并先出计划,不做修改';
+  }
+  if (planEl) {
+    planEl.addEventListener('click', function () {
+      planMode = !planMode;
+      updatePlanToggle();
+      setStatus(planMode ? '计划模式:只读,先出计划' : '');
+    });
+  }
+  updatePlanToggle();
   inputEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.isComposing) sendMessage();
   });

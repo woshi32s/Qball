@@ -40,7 +40,9 @@ def notes_dir() -> Path:
 # ------------------------------------------------------------------ 工具实现
 
 _MAX_READ = 200_000
+_MAX_READ_LINES = 1500
 _MAX_OUTPUT = 40_000
+_LIST_LIMIT = 200
 
 
 def _safe_path(rel: str) -> Path:
@@ -73,7 +75,9 @@ def t_fs_list(args):
             items.append("%s  (%d 字节)" % (child.name, size))
     if not items:
         return "(空目录)"
-    return "\n".join(items[:200])
+    if len(items) > _LIST_LIMIT:
+        return "\n".join(items[:_LIST_LIMIT]) + "\n…(共 %d 项,已截断;可用更具体的路径缩小范围)" % len(items)
+    return "\n".join(items)
 
 
 def t_fs_read(args):
@@ -82,9 +86,32 @@ def t_fs_read(args):
         return "文件不存在: %s" % str(args.get("path"))
     data = target.read_bytes()[:_MAX_READ]
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return data.decode("utf-8", "replace")
+        text = data.decode("utf-8", "replace")
+    lines = text.splitlines()
+    total = len(lines)
+    try:
+        offset = max(1, int(args.get("offset") or 1))
+    except (TypeError, ValueError):
+        offset = 1
+    try:
+        limit = int(args.get("limit") or _MAX_READ_LINES)
+    except (TypeError, ValueError):
+        limit = _MAX_READ_LINES
+    limit = max(1, min(limit, 3000))
+    chunk = lines[offset - 1:offset - 1 + limit]
+    out = "\n".join(chunk)
+    notes = []
+    if offset > 1 or (offset - 1 + limit) < total:
+        notes.append("第 %d-%d 行,共 %d 行" % (offset, offset - 1 + len(chunk), total))
+    if (offset - 1 + limit) < total:
+        notes.append("已截断,可加 offset=%d 继续读" % (offset + limit))
+    if len(data) >= _MAX_READ:
+        notes.append("文件超过 %dKB,仅读取前部" % (_MAX_READ // 1000))
+    if notes:
+        out += "\n…(%s)" % "; ".join(notes)
+    return out
 
 
 def t_fs_write(args):
@@ -95,10 +122,85 @@ def t_fs_write(args):
     return "已写入 %s(%d 字符)" % (target.relative_to(workspace()), len(content))
 
 
+def t_fs_edit(args):
+    """唯一匹配的 find/replace 编辑;失败时给出可自修的精确提示。"""
+    target = _safe_path(str(args.get("path") or ""))
+    if not target.is_file():
+        raise ValueError("文件不存在: %s(新建文件请用 fs.write)" % str(args.get("path")))
+    find = str(args.get("find") or "")
+    if not find:
+        raise ValueError("find 不能为空;请给出文件中一段唯一且逐字符一致的原文")
+    replace = str(args.get("replace") if args.get("replace") is not None else "")
+    text = target.read_text(encoding="utf-8", errors="replace")
+    count = text.count(find)
+    if count == 0:
+        hint = ""
+        head = find.strip().splitlines()
+        if head:
+            probe = head[0][:40]
+            near = text.find(probe)
+            if near >= 0:
+                line_no = text.count("\n", 0, near) + 1
+                hint = " 文件中相似内容出现在第 %d 行附近,可能空格/换行不一致" % line_no
+        raise ValueError("未找到匹配内容:find 必须在文件中逐字符一致(含缩进与空行)。%s" % hint)
+    if count > 1:
+        raise ValueError("find 不唯一(出现 %d 次);请扩大片段(多带一行上下文)使其唯一" % count)
+    new_text = text.replace(find, replace, 1)
+    target.write_text(new_text, encoding="utf-8")
+    def _brief(s):
+        s = s if len(s) <= 120 else s[:120] + "…"
+        return s.replace("\n", "⏎")
+    return "已替换 1 处(%s:%d 字符 → %d 字符)\n- 原: %s\n+ 新: %s" % (
+        target.relative_to(workspace()), len(text), len(new_text), _brief(find), _brief(replace))
+
+
 def t_fs_mkdir(args):
     target = _safe_path(str(args.get("path") or ""))
     target.mkdir(parents=True, exist_ok=True)
     return "已创建目录 %s" % target.relative_to(workspace())
+
+
+# ---------------------------------------------------- 会话上下文(待办等)
+
+_SESSION = {"sid": None, "todos": {}}
+
+
+def set_session(sid):
+    _SESSION["sid"] = (sid or "").strip()[:64] or None
+
+
+def session_todos(sid):
+    if not sid:
+        return []
+    return list(_SESSION["todos"].get(sid) or [])
+
+
+def t_todo_write(args):
+    """整表覆盖式待办写入:小模型只需重写整个列表。"""
+    sid = _SESSION["sid"]
+    if not sid:
+        return "待办需要会话上下文,当前不可用"
+    raw = args.get("todos")
+    items = []
+    if isinstance(raw, list):
+        for it in raw[:20]:
+            if isinstance(it, dict):
+                content = str(it.get("content") or "").strip()[:120]
+                status = str(it.get("status") or "pending").strip().lower()
+            else:
+                content = str(it).strip()[:120]
+                status = "pending"
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+            if content:
+                items.append({"content": content, "status": status})
+    if not items:
+        _SESSION["todos"].pop(sid, None)
+        return "待办已清空"
+    _SESSION["todos"][sid] = items
+    done = sum(1 for i in items if i["status"] == "completed")
+    doing = sum(1 for i in items if i["status"] == "in_progress")
+    return "待办已更新:共 %d 项(完成 %d,进行中 %d)" % (len(items), done, doing)
 
 
 def t_shell_run(args):
@@ -268,19 +370,39 @@ TOOLS = {
         "fn": t_fs_list, "approval": False,
     },
     "fs.read": {
-        "spec": _spec("fs.read", "读取工作区内的文本文件",
-                      {"path": {"type": "string", "description": "相对工作区的文件路径"}}, ["path"]),
+        "spec": _spec("fs.read", "读取工作区内的文本文件(大文件可带 offset/limit 分段读)",
+                      {"path": {"type": "string", "description": "相对工作区的文件路径"},
+                       "offset": {"type": "integer", "description": "起始行号(从 1 开始,可选)"},
+                       "limit": {"type": "integer", "description": "最多读取行数(默认 1500,可选)"}}, ["path"]),
         "fn": t_fs_read, "approval": False,
     },
     "fs.write": {
-        "spec": _spec("fs.write", "把文本写入工作区内的文件(会覆盖)",
+        "spec": _spec("fs.write", "把文本写入工作区内的文件(会覆盖;已存在的文件建议先 fs.read)",
                       {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
         "fn": t_fs_write, "approval": False,
+    },
+    "fs.edit": {
+        "spec": _spec("fs.edit", "局部修改已有文件:把唯一一段 find 原文替换为 replace(比整文件重写安全)",
+                      {"path": {"type": "string", "description": "要修改的文件"},
+                       "find": {"type": "string", "description": "被替换的原文,必须与文件逐字符一致且在文件中唯一"},
+                       "replace": {"type": "string", "description": "替换后的新内容(空字符串=删除该段)"}},
+                      ["path", "find"]),
+        "fn": t_fs_edit, "approval": False,
     },
     "fs.mkdir": {
         "spec": _spec("fs.mkdir", "在工作区内创建目录",
                       {"path": {"type": "string"}}, ["path"]),
         "fn": t_fs_mkdir, "approval": False,
+    },
+    "todo.write": {
+        "spec": _spec("todo.write", "整表写入当前任务的待办清单(多步任务建议先建待办,每步完成后更新状态)",
+                      {"todos": {"type": "array", "description": "待办数组,每项 {content: 内容, status: pending|in_progress|completed};传空数组清空",
+                                 "items": {"type": "object", "properties": {
+                                     "content": {"type": "string"},
+                                     "status": {"type": "string"}},
+                                     "required": ["content"]}}},
+                      ["todos"]),
+        "fn": t_todo_write, "approval": False,
     },
     "shell.run": {
         "spec": _spec("shell.run", "在工作区目录执行一条系统命令(需要用户批准)",

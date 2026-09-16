@@ -47,6 +47,13 @@ TOOL_TRIGGERS = [
     ("列一下工作区", "fs.list", {"path": "."}),
     ("跑一条命令", "shell.run", {"command": "echo hi-from-shell"}),
     ("evo-hello.txt", "fs.write", {"path": "evo-hello.txt", "content": "hi from qball\n"}),
+    ("读一下 fib.py", "fs.read", {"path": "fib.py"}),
+    ("改一下 fib.py", "fs.edit", {"path": "fib.py", "find": "print(a)", "replace": "print(a, end=' ')"}),
+    ("建个待办", "todo.write", {"todos": [
+        {"content": "检查输入文件", "status": "completed"},
+        {"content": "生成结果文件", "status": "in_progress"},
+        {"content": "回读校验", "status": "pending"},
+    ]}),
     ("fib.py", "fs.write", {
         "path": "fib.py",
         "content": "a, b = 0, 1\nfor _ in range(11):\n    print(a)\n    a, b = b, a + b\n",
@@ -142,6 +149,8 @@ def pick_reply(messages):
         reply = evo
     else:
         reply = PROBE_REPLY if PROBE_TEXT in user else RICH_REPLY
+    if "QBALL_RULE_MARKER" in system:
+        reply = "[RULE_SEEN] " + reply
     if "emotionId" in system:
         return json.dumps({"emotionId": "10", "reply": reply}, ensure_ascii=False)
     return reply

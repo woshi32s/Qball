@@ -228,6 +228,253 @@ def record_session(session_id, records):
         log.warning("session write failed: %s", exc)
 
 
+# ------------------------------------------------ 会话级防呆 / 待办 / 检查点 / 规则
+
+MODIFY_TOOLS = ("fs.write", "fs.edit", "fs.mkdir", "shell.run")
+PLAN_TOOLS = {"time.now", "fs.list", "fs.read", "web.fetch", "web.search",
+              "notes.add", "notes.list", "notes.read", "notes.search", "todo.write"}
+COMPACT_KEEP = 12
+_SESS_LOCK = threading.Lock()
+_SESS_FILES = {}   # sid -> {rel: {"mtime": float, "size": int}}
+
+
+def _ws_rel(rel):
+    rel = str(rel or "").strip().replace("\\", "/").lstrip("/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    if not rel or rel == "." or ".." in rel:
+        return ""
+    return rel
+
+
+def _file_state(rel):
+    try:
+        st = (Path(qball_tools.workspace()) / rel).stat()
+        return {"mtime": st.st_mtime, "size": st.st_size}
+    except OSError:
+        return None
+
+
+def session_write_guard(session_id, name, args):
+    """写/编辑前的防呆:本会话读过但磁盘已变 → 拒绝;fs.edit 需本会话读过。"""
+    if not session_id:
+        return ""
+    rel = _ws_rel((args or {}).get("path"))
+    if not rel:
+        return ""
+    with _SESS_LOCK:
+        known = (_SESS_FILES.get(session_id) or {}).get(rel)
+    disk = _file_state(rel)
+    if name == "fs.edit":
+        if known is None and disk is not None:
+            return "fs.edit 前请先用 fs.read 读一下这个文件(本会话未读过,防误改)"
+        if known and disk and (disk["mtime"] != known["mtime"] or disk["size"] != known["size"]):
+            return "文件在本次会话读取后已被其他改动修改,请先重新 fs.read 再编辑(防覆盖)"
+    if name == "fs.write" and known and disk and (
+            disk["mtime"] != known["mtime"] or disk["size"] != known["size"]):
+        return "文件在本次会话读取后已被其他改动修改,已阻止覆盖;请先重新 fs.read 确认内容"
+    return ""
+
+
+def session_note_tool(session_id, name, args, ok):
+    if not session_id or not ok:
+        return
+    rel = _ws_rel((args or {}).get("path"))
+    if not rel or name not in ("fs.read", "fs.write", "fs.edit"):
+        return
+    disk = _file_state(rel)
+    if disk is None:
+        return
+    with _SESS_LOCK:
+        _SESS_FILES.setdefault(session_id, {})[rel] = disk
+
+
+def session_todos_text(session_id):
+    if not session_id or qball_tools is None:
+        return ""
+    items = qball_tools.session_todos(session_id)
+    if not items:
+        return ""
+    mark = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+    lines = ["【当前待办(用 todo.write 维护)】"]
+    for t in items[:12]:
+        lines.append("- %s %s" % (mark.get(t.get("status") or "pending", "[ ]"),
+                                  str(t.get("content") or "")[:80]))
+    return "\n".join(lines)
+
+
+def session_msg_count(session_id):
+    path = _session_file(session_id)
+    if not path or not path.exists():
+        return 0
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+                   if line.strip())
+    except OSError:
+        return 0
+
+
+def load_project_rules():
+    """分层加载项目规则:全局 ~/.qball/QBALL.md + 工作区 QBALL.md / AGENTS.md。"""
+    parts = []
+    cands = [(STATE / "QBALL.md", "全局"),
+             (Path(qball_tools.workspace()) / "QBALL.md", "工作区"),
+             (Path(qball_tools.workspace()) / "AGENTS.md", "工作区 AGENTS")]
+    for path, label in cands:
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+            if not text:
+                continue
+            parts.append("【项目规则 · %s】\n%s" % (label, text[:2500]))
+        except OSError:
+            continue
+    return "\n\n".join(parts)
+
+
+CKPT_DIR = STATE / "checkpoints.git"
+
+
+def _ckpt_git(args, timeout=120):
+    return subprocess.run(
+        ["git", "--git-dir", str(CKPT_DIR), "--work-tree", str(Path(qball_tools.workspace()))] + args,
+        capture_output=True, timeout=timeout, **CREATE_NO_WINDOW)
+
+
+def ckpt_ensure():
+    if CKPT_DIR.exists():
+        return True
+    try:
+        _ckpt_git(["init", "-q"])
+        _ckpt_git(["config", "user.name", "Qball Checkpoints"])
+        _ckpt_git(["config", "user.email", "ckpt@qball.local"])
+        _ckpt_git(["config", "core.autocrlf", "false"])
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ckpt_snapshot(label):
+    """工作区快照(影子 git,独立于任何用户仓库);无变化时返回当前 HEAD。"""
+    try:
+        if not ckpt_ensure():
+            return ""
+        _ckpt_git(["add", "-A"])
+        diff = _ckpt_git(["diff", "--cached", "--quiet"])
+        if diff.returncode == 0:
+            head = _ckpt_git(["rev-parse", "HEAD"])
+            return head.stdout.decode("utf-8", "replace").strip()
+        if _ckpt_git(["commit", "-q", "-m", str(label)[:80]]).returncode != 0:
+            return ""
+        return _ckpt_git(["rev-parse", "HEAD"]).stdout.decode("utf-8", "replace").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def ckpt_restore(commit):
+    r = _ckpt_git(["reset", "--hard", commit])
+    if r.returncode != 0:
+        raise ValueError("还原失败: %s" % r.stderr.decode("utf-8", "replace")[:200])
+    _ckpt_git(["clean", "-fd"])
+    return True
+
+
+def quick_completion(messages, base, key, model, timeout=60):
+    """一次性的非交互补全(用于历史摘要);失败返回 ''。"""
+    parts = []
+    try:
+        upstream = open_chat_stream(messages, base or None, key or None, model or None)
+        for raw in upstream:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except ValueError:
+                continue
+            delta = ((obj.get("choices") or [{}])[0].get("delta") or {})
+            piece = delta.get("content") or ""
+            if piece:
+                parts.append(piece)
+                if sum(len(p) for p in parts) > 4000:
+                    break
+        return "".join(parts).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _session_summary(session_id):
+    path = _session_file(session_id)
+    if not path or not path.exists():
+        return None
+    last = None
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("role") == "summary":
+                last = rec
+    except OSError:
+        return None
+    return last
+
+
+def prepare_summary(history, session_id, base, key, model):
+    """历史超长时,用模型把最早部分压成摘要(持久化到会话,跨轮复用)。"""
+    items = []
+    for item in (history or []):
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = str(item.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            items.append({"role": role, "content": content[:2000]})
+    total = sum(len(it["content"]) for it in items)
+    if total <= HISTORY_CHARS or len(items) <= COMPACT_KEEP + 2:
+        return ""
+    cut = len(items) - COMPACT_KEEP
+    cached = _session_summary(session_id) if session_id else None
+    prev_upto = int((cached or {}).get("upto") or 0)
+    prev_text = str((cached or {}).get("summary") or "")
+    if cut <= prev_upto:
+        return prev_text
+    new_part = items[prev_upto:cut]
+    if not new_part:
+        return prev_text
+    body = []
+    if prev_text:
+        body.append("已有摘要:\n" + prev_text)
+    for it in new_part:
+        body.append(("用户: " if it["role"] == "user" else "助手: ") + it["content"])
+    prompt = ("请把下面的对话压缩成中文要点摘要(不超过 300 字),必须保留:1) 用户目标与关键要求 "
+              "2) 已完成的事与结论 3) 未完成的下一步 4) 提到的文件路径。只输出摘要本身。\n\n"
+              + "\n\n".join(body))
+    summary = quick_completion([{"role": "user", "content": prompt[:12000]}], base, key, model)
+    if not summary:
+        return prev_text
+    if session_id:
+        try:
+            path = _session_file(session_id)
+            if path:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"role": "summary", "content": summary[:2000],
+                                         "upto": cut, "t": time.time()},
+                                        ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+    return summary
+
+
 def _env_flag(name, default=True):
     raw = os.environ.get(name)
     if raw is None:
@@ -353,11 +600,18 @@ def parse_reply(content):
     return eid, reply, action
 
 
-def build_messages(message, history, tools_hint=None, system=None):
+def build_messages(message, history, tools_hint=None, system=None,
+                   session_id=None, prefix_summary=None):
     if system:
         base_system = system
     else:
         base_system = SYSTEM_PROMPT
+        try:
+            rules = load_project_rules()
+        except Exception:  # noqa: BLE001
+            rules = ""
+        if rules:
+            base_system = base_system + "\n\n" + rules
         if evolution_engine is not None:
             try:
                 hint = evolution_engine.prompt_addendum(STATE)
@@ -365,9 +619,18 @@ def build_messages(message, history, tools_hint=None, system=None):
                 hint = ""
             if hint:
                 base_system = base_system + "\n\n" + hint
+        try:
+            todos = session_todos_text(session_id)
+        except Exception:  # noqa: BLE001
+            todos = ""
+        if todos:
+            base_system = base_system + "\n\n" + todos
         if tools_hint:
             base_system = base_system + "\n\n" + tools_hint
     messages = [{"role": "system", "content": base_system}]
+    if prefix_summary:
+        messages.append({"role": "system",
+                         "content": "【更早对话的摘要(系统自动压缩,内容仍然有效)】\n" + str(prefix_summary)[:3000]})
     items = []
     for item in (history or []):
         if not isinstance(item, dict):
@@ -978,6 +1241,8 @@ def api_session_detail(sid):
                     item["tools"] = rec.get("tools")
                 if rec.get("deliverables"):
                     item["deliverables"] = rec.get("deliverables")
+                if rec.get("checkpoint"):
+                    item["checkpoint"] = rec.get("checkpoint")
                 msgs.append(item)
     except OSError:
         return api_error(500, "读取失败")
@@ -1214,18 +1479,32 @@ def api_chat_stream():
     auto_approve = request.headers.get("X-Qball-Auto-Approve") == "1" and is_admin()
     limit = MAX_MESSAGE_CHARS_LOCAL if is_admin() else MAX_MESSAGE_CHARS
     msg_text = message[:limit]
+    plan_mode = str(payload.get("mode") or "").strip().lower() == "plan"
 
     def generate():
         native = use_tools
         text_hint = qball_tools.prompt_section() if use_tools else None
+        try:
+            summary_text = prepare_summary(history, session_id, base, key, model)
+        except Exception:  # noqa: BLE001
+            summary_text = ""
         messages = build_messages(msg_text, history,
-                                  tools_hint=None if native else text_hint)
+                                  tools_hint=None if native else text_hint,
+                                  session_id=session_id, prefix_summary=summary_text)
+        if plan_mode:
+            messages[0]["content"] += (
+                "\n\n【计划模式】当前是只读计划档:只允许查看与调研,禁止修改文件或执行命令。"
+                "请先给出清晰的分步计划(编号列表,每步一句话,涉及文件写出路径),"
+                "如有必要用 todo.write 建待办;结尾询问用户是否开始执行。")
         state = {"eid": "02", "text": [], "tools": [], "deliverables": []}
+        turn_ckpt = {"commit": "", "msg_index": session_msg_count(session_id)}
         rounds = 0
 
         while rounds < MAX_TOOL_ROUNDS:
             rounds += 1
             tool_defs = qball_tools.all_specs() if (use_tools and native) else None
+            if tool_defs and plan_mode:
+                tool_defs = [s for s in tool_defs if s.get("name") in PLAN_TOOLS]
             try:
                 upstream = open_chat_stream(messages, base or None, key or None, model or None,
                                             tools=tool_defs, session_id=session_id)
@@ -1233,7 +1512,8 @@ def api_chat_stream():
                 err = str(exc)
                 if tool_defs and _tools_unsupported(err):
                     native = False
-                    messages = build_messages(msg_text, history, tools_hint=text_hint)
+                    messages = build_messages(msg_text, history, tools_hint=text_hint,
+                                              session_id=session_id, prefix_summary=summary_text)
                     continue
                 log.warning("stream open failed: %s", exc)
                 yield _sse({"type": "error", "message": err})
@@ -1361,6 +1641,9 @@ def api_chat_stream():
                         assistant["tools"] = state["tools"]
                     if state["deliverables"]:
                         assistant["deliverables"] = state["deliverables"]
+                    if turn_ckpt["commit"]:
+                        assistant["checkpoint"] = {"commit": turn_ckpt["commit"],
+                                                   "msg_index": turn_ckpt["msg_index"]}
                     record_session(session_id, [
                         {"role": "user", "content": msg_text},
                         assistant,
@@ -1372,7 +1655,24 @@ def api_chat_stream():
             for call in calls:
                 state["tools"].append(call["name"])
                 yield _sse({"type": "tool_call", "id": call["id"], "name": call["name"], "args": call["args"]})
-                if qball_tools.needs_approval(call["name"]) and not auto_approve:
+                if plan_mode and call["name"] not in PLAN_TOOLS:
+                    ok, text = False, "计划模式:该工具在只读档被禁用;请在计划里说明需要它做什么"
+                    yield _sse({"type": "tool_result", "id": call["id"], "name": call["name"],
+                                "ok": ok, "text": text})
+                    results.append((call, text))
+                    continue
+                if session_id and call["name"] in MODIFY_TOOLS and not turn_ckpt["commit"]:
+                    ck = ckpt_snapshot("turn %s · %s" % (session_id[:24], call["name"]))
+                    if ck:
+                        turn_ckpt["commit"] = ck
+                        yield _sse({"type": "checkpoint", "id": ck})
+                qball_tools.set_session(session_id)
+                guard = ""
+                if call["name"] in ("fs.write", "fs.edit"):
+                    guard = session_write_guard(session_id, call["name"], call["args"])
+                if guard:
+                    ok, text = False, guard
+                elif qball_tools.needs_approval(call["name"]) and not auto_approve:
                     approval_id = uuid.uuid4().hex[:12]
                     yield _sse({"type": "approval_required", "id": approval_id,
                                 "name": call["name"], "args": call["args"]})
@@ -1383,6 +1683,9 @@ def api_chat_stream():
                         ok, text = False, "用户拒绝了这次操作"
                 else:
                     ok, text = qball_tools.run(call["name"], call["args"])
+                session_note_tool(session_id, call["name"], call["args"], ok)
+                if ok and call["name"] == "todo.write" and session_id:
+                    yield _sse({"type": "todos", "items": qball_tools.session_todos(session_id)})
                 yield _sse({"type": "tool_result", "id": call["id"], "name": call["name"],
                             "ok": ok, "text": text[:4000]})
                 results.append((call, text))
@@ -1422,6 +1725,9 @@ def api_chat_stream():
                 assistant["tools"] = state["tools"]
             if state["deliverables"]:
                 assistant["deliverables"] = state["deliverables"]
+            if turn_ckpt["commit"]:
+                assistant["checkpoint"] = {"commit": turn_ckpt["commit"],
+                                           "msg_index": turn_ckpt["msg_index"]}
             record_session(session_id, [
                 {"role": "user", "content": msg_text},
                 assistant,
@@ -1462,6 +1768,57 @@ def api_open():
         else:
             subprocess.Popen(["xdg-open", str(target if action == "open" else target.parent)])
         return jsonify({"ok": True, "path": str(target)})
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+
+
+@app.get("/api/checkpoints")
+def api_checkpoints():
+    """最近的工作区快照(影子 git),仅本机。"""
+    if not is_admin():
+        return api_error(403, "仅本机可查看")
+    items = []
+    try:
+        if CKPT_DIR.exists():
+            r = _ckpt_git(["log", "--pretty=format:%H|%ad|%s", "--date=format:%m-%d %H:%M", "-30"])
+            for line in r.stdout.decode("utf-8", "replace").splitlines():
+                cols = line.split("|", 2)
+                if len(cols) == 3:
+                    items.append({"commit": cols[0], "time": cols[1], "label": cols[2]})
+    except Exception as exc:  # noqa: BLE001
+        return api_error(500, str(exc))
+    return jsonify({"checkpoints": items})
+
+
+@app.post("/api/checkpoints/restore")
+def api_checkpoints_restore():
+    """把工作区还原到某个快照;scope=both 时同时裁掉该轮之后的对话。"""
+    if not is_admin():
+        return api_error(403, "仅本机可操作")
+    payload = request.get_json(silent=True) or {}
+    commit = str(payload.get("commit") or "").strip()
+    scope = "both" if str(payload.get("scope") or "") == "both" else "files"
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        return api_error(400, "commit 不合法")
+    try:
+        if not CKPT_DIR.exists():
+            return api_error(400, "还没有任何检查点")
+        ver = _ckpt_git(["rev-parse", "--verify", commit + "^{commit}"])
+        if ver.returncode != 0:
+            return api_error(400, "找不到该检查点")
+        ckpt_restore(commit)
+        if scope == "both":
+            sid = str(payload.get("session") or "").strip()[:64]
+            try:
+                keep = int(payload.get("msg_index"))
+            except (TypeError, ValueError):
+                keep = -1
+            path = _session_file(sid) if sid else None
+            if path and path.exists() and keep >= 0:
+                lines = [l for l in path.read_text(encoding="utf-8", errors="replace").splitlines()
+                         if l.strip()]
+                path.write_text("\n".join(lines[:keep]) + "\n", encoding="utf-8")
+        return jsonify({"ok": True, "scope": scope})
     except Exception as exc:  # noqa: BLE001
         return api_error(500, str(exc))
 
