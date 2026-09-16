@@ -219,8 +219,21 @@ const types = (events) => events.map((e) => e.type).join(',');
   log(ruleText.indexOf('RULE_SEEN') >= 0, 'project rules injected into system', ruleText.slice(0, 30));
   await runTool('fs.write', { path: 'QBALL.md', content: '' });
 
-  /* ---------- Agent 2.0:上下文自动压缩 ---------- */
-  const sidZ = 'compact-' + Date.now();
+  /* ---------- Agent 2.0:qball run 非交互模式 ---------- */
+  await j(A + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_base: FAKE + '/v1', api_key: 'sk-fake', model: 'fake-model-alpha' })
+  });
+  const runRes = await j(A + '/api/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: '帮我列一下工作区' })
+  });
+  log(runRes.status === 200 && runRes.d.ok && (runRes.d.tools || []).indexOf('fs.list') >= 0,
+    'qball run (non-interactive) executes task', JSON.stringify({ tools: runRes.d && runRes.d.tools }));
+  log(typeof runRes.d.text === 'string' && runRes.d.text.length > 0,
+    'qball run returns final text', runRes.d && runRes.d.text.slice(0, 24));
+
+  /* ---------- Agent 2.0:上下文自动压缩 ---------- */  const sidZ = 'compact-' + Date.now();
   const bigHistory = [];
   for (let i = 0; i < 24; i++) {
     bigHistory.push({ role: i % 2 ? 'assistant' : 'user', content: '历史消息' + i + ' ' + 'x'.repeat(420) });

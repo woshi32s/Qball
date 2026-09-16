@@ -398,6 +398,7 @@ function Invoke-Run {
     exit 1
   }
   if ($r.text) { Write-Host ""; Write-Host $r.text }
+  if ($r.error) { Write-Bad ("执行出错: " + $r.error) }
   if ($r.deliverables -and $r.deliverables.Count -gt 0) { Write-Ok ("产物: " + ($r.deliverables -join "、")) }
   if ($r.tools -and $r.tools.Count -gt 0) { Write-Tip ("工具调用: " + ($r.tools -join "、")) }
 }

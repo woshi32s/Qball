@@ -1885,7 +1885,7 @@ def api_run():
         headers["X-Qball-Auto-Approve"] = "1"
     req = Request("http://%s/api/chat_stream" % request.host,
                   data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
-    text_parts, tools, deliverables, events = [], [], [], []
+    text_parts, tools, deliverables, events, errors = [], [], [], [], []
     try:
         with urlopen(req, timeout=3600) as resp:
             for raw in resp:
@@ -1904,12 +1904,16 @@ def api_run():
                     tools.append(ev.get("name"))
                 elif kind == "deliverable":
                     deliverables.append(ev.get("path"))
+                elif kind == "error":
+                    errors.append(str(ev.get("message") or "unknown error")[:300])
                 elif kind == "done":
                     break
     except Exception as exc:  # noqa: BLE001
         return api_error(502, "执行失败: %s" % exc)
-    out = {"ok": True, "text": "".join(text_parts).strip(),
+    out = {"ok": not errors, "text": "".join(text_parts).strip(),
            "tools": tools, "deliverables": deliverables}
+    if errors:
+        out["error"] = errors[0]
     if payload.get("events"):
         out["events"] = events
     return jsonify(out)
