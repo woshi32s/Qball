@@ -70,9 +70,10 @@ Invoke-Quiet git @('-C', $app, 'add', '-A')
 Invoke-Quiet git @('-C', $app, 'commit', '-q', '-m', 'fixture baseline')
 
 function Start-Hidden($cmdline) {
-  $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdline }
-  if ($r.ReturnValue -ne 0) { throw "failed to start: $cmdline" }
-  return [int]$r.ProcessId
+  # $cmdline 形如: cmd /c cd /d "..." && set X=Y && python ...
+  $inner = $cmdline -replace '^cmd(\.exe)? /c\s+', ''
+  $p = Start-Process -FilePath "cmd.exe" -ArgumentList ("/c " + $inner) -WindowStyle Hidden -PassThru
+  return [int]$p.Id
 }
 
 $pids = @()

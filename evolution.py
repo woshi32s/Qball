@@ -29,6 +29,7 @@ import urllib.request
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+CREATE_NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
 
 # ---------------------------------------------------------------- 常量与配置
 
@@ -277,7 +278,7 @@ def init_workspace(state_dir):
 
 def _run(args, cwd=None, timeout=120):
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
-                          capture_output=True, timeout=timeout)
+                          capture_output=True, timeout=timeout, **CREATE_NO_WINDOW)
     out = (proc.stdout or b"").decode("utf-8", "replace") + (proc.stderr or b"").decode("utf-8", "replace")
     return proc.returncode, out.strip()
 
@@ -844,7 +845,8 @@ def run_gate(cfg):
     args = cmd if IS_WINDOWS else ["bash", "-lc", cmd]
     try:
         proc = subprocess.run(args, shell=(shell == cmd), cwd=cfg["_app_dir"],
-                              capture_output=True, timeout=cfg.get("gate_timeout_seconds", 1800))
+                              capture_output=True, timeout=cfg.get("gate_timeout_seconds", 1800),
+                              **CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired:
         return False, "测试门超时"
     out = ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8", "replace")
@@ -1175,7 +1177,8 @@ def daemon_pid(state_dir):
     try:
         pid = int(paths(state_dir)["pid"].read_text(encoding="ascii").strip())
         if IS_WINDOWS:
-            out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True, timeout=15)
+            out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True,
+                                 timeout=15, **CREATE_NO_WINDOW)
             return pid if str(pid) in out.stdout.decode("utf-8", "replace") else None
         os.kill(pid, 0)
         return pid

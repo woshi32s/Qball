@@ -9,10 +9,13 @@ import html
 import json
 import re
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+_NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
 
 STATE_DIR = Path.home() / ".qball"
 
@@ -105,7 +108,7 @@ def t_shell_run(args):
     try:
         proc = subprocess.run(
             cmd, shell=True, cwd=str(workspace()),
-            capture_output=True, timeout=120,
+            capture_output=True, timeout=120, **_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
         return "命令超时(120 秒)已终止: %s" % cmd

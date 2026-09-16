@@ -167,6 +167,7 @@ except Exception:  # noqa: BLE001
     evolution_engine = None
 
 USER_AGENT = "Qball/0.2 (+https://github.com/woshi32s/Qball)"
+CREATE_NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
 
 MAX_TOOL_ROUNDS = 8
 _PENDING_APPROVALS = {}
@@ -739,7 +740,7 @@ def _shortcut_path():
 def _task_exists():
     try:
         res = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME],
-                             capture_output=True, timeout=15)
+                             capture_output=True, timeout=15, **CREATE_NO_WINDOW)
         return res.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -762,7 +763,7 @@ def set_autostart(enabled):
             res = subprocess.run(
                 ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/SC", "ONLOGON",
                  "/TR", '"%s" --no-browser' % exe],
-                capture_output=True, timeout=30)
+                capture_output=True, timeout=30, **CREATE_NO_WINDOW)
             if res.returncode == 0:
                 return "task"
         except (OSError, subprocess.SubprocessError):
@@ -774,14 +775,14 @@ def set_autostart(enabled):
             "$sc.WorkingDirectory = '%s'; $sc.Save()"
         ) % (str(_shortcut_path()), exe, str(Path(exe).parent))
         res = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                             capture_output=True, timeout=30)
+                             capture_output=True, timeout=30, **CREATE_NO_WINDOW)
         if res.returncode != 0:
             raise RuntimeError("无法创建开机自启(计划任务与启动文件夹均失败)")
         return "startup"
     else:
         try:
             subprocess.run(["schtasks", "/Delete", "/F", "/TN", TASK_NAME],
-                           capture_output=True, timeout=15)
+                           capture_output=True, timeout=15, **CREATE_NO_WINDOW)
         except (OSError, subprocess.SubprocessError):
             pass
         shortcut = _shortcut_path()
